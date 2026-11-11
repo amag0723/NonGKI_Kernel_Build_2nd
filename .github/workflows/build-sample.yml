@@ -47,10 +47,16 @@ env:
   KERNELSU_METHOD : "shell"          # non-GKI; same as raphael / OP8 workflows
 
   # ---- Kernel-level hiding ----
+  # OnePlus OSS trees carry a CONFIG_OPLUS_SECURE_GUARD block in fs/namespace.c
+  # that upstream SUSFS patch v2.2.00 does not understand -> Hunk #1 rejects.
+  # Every official OnePlus workflow enables SUSFS_FIXED with a per-device
+  # susfs_fixed.patch; we do the same (guacamole_oos12/susfs_fixed.patch).
+  # A non-empty SUSFS_PATCH_FIXED also makes the upstream rej guard skip its
+  # hard `false` exit for the harmless fs/notify/fdinfo.c reject.
   SUSFS_ENABLE : true
-  SUSFS_FIXED : false                # no guacamole-specific susfs fix folder exists
-  SUSFS_FOLDER_FIXED : ""
-  SUSFS_PATCH_FIXED : ""
+  SUSFS_FIXED : true
+  SUSFS_FOLDER_FIXED : "guacamole_oos12"
+  SUSFS_PATCH_FIXED : "susfs_fixed"
 
   AK3_SOURCE : "https://github.com/osm0sis/AnyKernel3.git"
   AK3_BRANCH : "master"
@@ -67,8 +73,9 @@ env:
   PACK_METHOD : "AnyKernel3"
   PACK_KMODULES : "false"
 
-  PATCHES_SOURCE : "JackA1ltman/NonGKI_Kernel_Patches"
-  PATCHES_BRANCH : "op_kernel"       # OnePlus kernel patch set (default branch of that repo)
+  # Our fork carries the extra guacamole_oos12/susfs_fixed.patch on op_kernel.
+  PATCHES_SOURCE : "amag0723/NonGKI_Kernel_Patches"
+  PATCHES_BRANCH : "op_kernel"       # OnePlus kernel patch set
 
   REKERNEL_ENABLE : "false"
   DROIDSPACES_ENABLE : "false"
