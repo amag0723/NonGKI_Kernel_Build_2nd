@@ -122,6 +122,54 @@ jobs:
       - name: Get necessary tools
         uses: ./.github/workflows/build-ready
 
+      # OnePlus splits the OOS12 kernel into TWO repositories:
+      #   android_kernel_oneplus_sm8150                       (kernel core)
+      #   android_kernel_modules_and_devicetree_oneplus_sm8150 (vendor/ tree)
+      # The core tree contains symlinks such as
+      #   block/oplus_foreground_io_opt -> ../../../vendor/oplus/kernel/...
+      # Without the second repo, `make defconfig` dies with
+      #   block/Kconfig:235: can't open file "block/oplus_foreground_io_opt/Kconfig"
+      # Merge the official vendor tree, then re-point every dangling symlink
+      # at the real directory inside device_kernel/vendor/.
+      - name: Merge official OnePlus vendor tree
+        run: |
+          cd $GITHUB_WORKSPACE
+          git clone --depth=1 -b oneplus/sm8150_s_12.1_op7pro \
+            https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8150.git vendor_src
+          mkdir -p device_kernel/vendor
+          cp -a vendor_src/vendor/. device_kernel/vendor/
+          echo "[+] vendor tree merged: $(find device_kernel/vendor -type f | wc -l) files"
+          python3 - <<'PYFIXLINKS'
+          import os
+          root = os.path.abspath("device_kernel")
+          fixed, unresolved = [], []
+          for dirpath, dirs, files in os.walk(root):
+              if ".git" in dirpath:
+                  continue
+              for n in list(dirs) + list(files):
+                  fp = os.path.join(dirpath, n)
+                  if not os.path.islink(fp) or os.path.exists(fp):
+                      continue
+                  target = os.readlink(fp)
+                  idx = target.find("vendor/")
+                  if idx < 0:
+                      unresolved.append((os.path.relpath(fp, root), target))
+                      continue
+                  cand = os.path.join(root, target[idx:])
+                  if os.path.exists(cand):
+                      os.remove(fp)
+                      os.symlink(cand, fp)
+                      fixed.append(os.path.relpath(fp, root))
+                  else:
+                      unresolved.append((os.path.relpath(fp, root), target))
+          print("=== vendor merge: re-pointed dangling symlinks: %d ===" % len(fixed))
+          for f in fixed[:60]:
+              print("    ", f)
+          print("=== vendor merge: still unresolved: %d ===" % len(unresolved))
+          for f, t in unresolved[:60]:
+              print("    ", f, "->", t)
+          PYFIXLINKS
+
       - name: Patch Kernel of SUSFS
         uses: ./.github/workflows/patch-susfs
 
@@ -132,39 +180,14 @@ jobs:
       - name: Extra Kernel Options
         run: |
           cd $GITHUB_WORKSPACE/device_kernel
-          # OnePlusOSS sm8150 OOS12 tree is NOT self-contained: it references
-          # vendor/oplus/... via symlinks that point outside the repo.  The
-          # stock defconfig enables CONFIG_OPLUS_FG_IO_OPT=y, whose Kconfig
-          # lives at block/oplus_foreground_io_opt/Kconfig (dangling symlink).
-          # Disable that option and auto-neutralise every dangling `source`
-          # line, then report the full damage so we can judge whether this
-          # tree is salvageable at all.
+          # With the official vendor tree merged, everything should resolve.
+          # This step only REPORTS any remaining dangling references (and
+          # neutralises a `source` line only if its target is genuinely absent),
+          # so the stock feature set is preserved.
           python3 - <<'PYSELFHEAL'
           import os, re
           root = os.getcwd()
-          cfg = os.path.join(root, "arch/arm64/configs/vendor/sm8150-perf_defconfig")
-
-          # 1) turn off the config whose implementation is missing
-          if os.path.isfile(cfg):
-              lines = open(cfg, encoding="utf-8", errors="replace").read().splitlines(True)
-              n = 0
-              for i, l in enumerate(lines):
-                  if l.strip() == "CONFIG_OPLUS_FG_IO_OPT=y":
-                      lines[i] = "# CONFIG_OPLUS_FG_IO_OPT is not set\n"
-                      n += 1
-              open(cfg, "w", encoding="utf-8").writelines(lines)
-              print("autoheal: disabled CONFIG_OPLUS_FG_IO_OPT occurrences:", n)
-
-          # 2) block/Makefile refers to a directory that does not exist
-          mk = os.path.join(root, "block/Makefile")
-          if os.path.isfile(mk):
-              lines = open(mk, encoding="utf-8", errors="replace").read().splitlines(True)
-              for i, l in enumerate(lines):
-                  if "oplus_foreground_io_opt/" in l and l.lstrip().startswith("obj-"):
-                      lines[i] = "# [autoheal] " + l.lstrip()
-              open(mk, "w", encoding="utf-8").writelines(lines)
-
-          # 3) neutralise every Kconfig `source` whose target file is absent
+          # neutralise any Kconfig `source` whose target file is absent
           disabled = []
           for dirpath, dirs, files in os.walk(root):
               dirs[:] = [d for d in dirs
