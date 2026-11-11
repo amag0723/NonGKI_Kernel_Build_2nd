@@ -170,11 +170,7 @@ runs:
               printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' | sudo tee /etc/resolv.conf >/dev/null
             fi
             if [ ! -f /etc/apt/apt.conf.d/99wb-retry ]; then
-              sudo tee /etc/apt/apt.conf.d/99wb-retry >/dev/null <<'WBAPT'
-Acquire::Retries "10";
-Acquire::http::Timeout "20";
-Acquire::https::Timeout "20";
-WBAPT
+              printf 'Acquire::Retries "10";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/99wb-retry >/dev/null
             fi
             sudo apt-get update || true
             sudo apt-get install git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler wget curl cpio liblz4-tool lz4 libz3-4 elfutils -y
