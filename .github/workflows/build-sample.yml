@@ -252,29 +252,34 @@ jobs:
               print("=== fixup: CONFIG_CC_STACKPROTECTOR_STRONG disabled: %d ===" % n)
 
           # clang-13 (Proton-Clang) vs the stock 4.14 OnePlus Makefile:
-          # Makefile:1003-1015 uses cc-option to PROMOTE several legacy
-          # warnings to hard errors, e.g. -Werror=strict-prototypes.  The
-          # OnePlus vendor code contains old-style definitions such as
-          #     void adjust_sched_assist_input_ctrl(){ ... }
-          # which clang-13 rejects outright.  Clang-10 (the stock toolchain)
-          # treated these as plain warnings, so restoring that behaviour does
-          # not change a single line of stock code or weaken real errors
-          # (undefined symbols / type errors still fail at compile/link).
-          # Append AFTER all the -Werror= lines: clang uses last-one-wins.
+          # Makefile:1003-1015 promotes five legacy warnings to hard errors via
+          #   KBUILD_CFLAGS += $(call cc-option,-Werror=XXX)
+          # Two separate failures with clang-13:
+          #   * -Werror=strict-prototypes kills vendor code such as
+          #         void adjust_sched_assist_input_ctrl(){ ... }
+          #   * -Werror=designated-init is NOT a valid clang warning group;
+          #     CLANG_FLAGS (Makefile:555) has -Werror=unknown-warning-option,
+          #     so adding any -Wno-error=<invalid> aborts EVERY compile unit
+          #     at scripts/mod/empty.o (this is what broke v7).
+          # Stock clang-10 treated these as plain warnings.  Commenting out
+          # those five lines restores that behaviour WITHOUT introducing a
+          # single new compiler flag.  Real errors are untouched: undefined
+          # symbols still fail, and -Werror-implicit-function-declaration
+          # (Makefile:430, not a cc-option line) stays in force.
           mk = os.path.join(root, "Makefile")
-          wno = ("strict-prototypes", "implicit-int", "date-time",
-                 "designated-init", "incompatible-pointer-types")
           if os.path.isfile(mk):
-              txt = open(mk, encoding="utf-8", errors="replace").read()
-              if "SUKISU_WERROR_FIXUP" not in txt:
-                  extra = ("\n# SUKISU_WERROR_FIXUP: clang-13 vs 4.14 legacy code\n"
-                           "KBUILD_CFLAGS += " +
-                           " ".join("-Wno-error=" + w for w in wno) + "\n")
-                  with open(mk, "a", encoding="utf-8") as f:
-                      f.write(extra)
-                  print("=== fixup: appended %d -Wno-error flags to Makefile ===" % len(wno))
-              else:
-                  print("=== fixup: werror override already present ===")
+              lines = open(mk, encoding="utf-8", errors="replace").read().splitlines(True)
+              n = 0
+              for i, l in enumerate(lines):
+                  s = l.strip()
+                  if (s.startswith("KBUILD_CFLAGS") and
+                          "$(call cc-option,-Werror=" in s and
+                          "SUKISU_WERROR_FIXUP" not in l):
+                      lines[i] = "# [SUKISU_WERROR_FIXUP] " + l.lstrip()
+                      n += 1
+              if n:
+                  open(mk, "w", encoding="utf-8").writelines(lines)
+              print("=== fixup: commented out %d -Werror= lines ===" % n)
 
           # neutralise any Kconfig `source` whose target file is absent
           disabled = []
