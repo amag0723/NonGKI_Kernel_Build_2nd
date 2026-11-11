@@ -864,6 +864,59 @@ jobs:
                       print("=== fixup: v21 kallsyms.c anchor not found; diag skipped ===")
           else:
               print("=== fixup: v21 scripts/kallsyms.c not found ===")
+          # ---- v22: force KALLSYMS_BASE_RELATIVE=n at the Kconfig level ----
+          # run 43062089225: the v21 defconfig edit DID run, yet kallsyms
+          # still received --base-relative.  Reason: KALLSYMS_BASE_RELATIVE
+          # is an INVISIBLE kconfig symbol (no prompt, `bool` + `default
+          # !IA64` in init/Kconfig) -- kconfig discards user values for
+          # invisible symbols and always applies the default, which is y on
+          # arm64.  The only effective lever is the default itself.
+          # Also: the v21ksudiag revealed the offending symbol has a name of
+          # "he" + one raw non-UTF8 byte at 0xffffff8008080000 (== _text), so
+          # some OTHER symbol sits >= 4 GiB below the image (bfd-linked
+          # non-alloc/orphan section at ~0 that lld simply drops).  With
+          # BASE_RELATIVE=n kallsyms has no range check, the build proceeds,
+          # and objcopy -O binary only copies ALLOC sections, so a non-alloc
+          # stray cannot corrupt the bootable Image.  v22 also dumps the 10
+          # lowest symbols at every KSYM pass so the stray is identified by
+          # name/address in the next log.
+          _kc22 = os.path.join(root, "init", "Kconfig")
+          if os.path.isfile(_kc22):
+              _kc = open(_kc22, encoding="utf-8", errors="replace").read()
+              _i22 = _kc.find("config KALLSYMS_BASE_RELATIVE")
+              if _i22 < 0:
+                  print("=== fixup: v22 init/Kconfig KALLSYMS_BASE_RELATIVE block not found ===")
+              else:
+                  _seg = _kc[_i22:_i22 + 400]
+                  _seg2 = __import__('re').sub(r"^[ \t]*default[ \t]+.*$", "\tdefault n",
+                                               _seg, count=1, flags=__import__('re').M)
+                  if _seg2 != _seg:
+                      open(_kc22, "w", encoding="utf-8").write(_kc[:_i22] + _seg2 + _kc[_i22 + 400:])
+                      print("=== fixup: v22 init/Kconfig KALLSYMS_BASE_RELATIVE default -> n ===")
+                  else:
+                      print("=== fixup: v22 init/Kconfig already default n (or pattern absent) ===")
+          else:
+              print("=== fixup: v22 init/Kconfig not found at %s ===" % _kc22)
+          _ks22 = os.path.join(root, "scripts", "kallsyms.c")
+          if os.path.isfile(_ks22):
+              _kt = open(_ks22, encoding="utf-8", errors="replace").read()
+              if "v22ksudiag" in _kt:
+                  print("=== fixup: v22 kallsyms.c already patched ===")
+              else:
+                  _anchor = "\tsort_symbols();\n\toptimize_token_table();"
+                  _dump = ("\tsort_symbols();\n"
+                           "\t{ unsigned int _i22d; for (_i22d = 0; _i22d < 10 && _i22d < table_cnt; _i22d++) "
+                           "fprintf(stderr, \"v22ksudiag[%u] %#llx %s\\n\", _i22d, table[_i22d].addr, "
+                           "(char *)table[_i22d].sym + 1); }\n"
+                           "\toptimize_token_table();")
+                  if _anchor in _kt:
+                      _kt = _kt.replace(_anchor, _dump, 1)
+                      open(_ks22, "w", encoding="utf-8").write(_kt)
+                      print("=== fixup: v22 kallsyms.c lowest-10 dump added ===")
+                  else:
+                      print("=== fixup: v22 kallsyms.c sort anchor not found; dump skipped ===")
+          else:
+              print("=== fixup: v22 scripts/kallsyms.c not found ===")
           # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
           # (kept for safety: if OP_8150_ADAPT is ever still defined on some
           # path, the reduced cam_defs_op.h is back-filled with the missing
