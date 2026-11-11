@@ -132,11 +132,100 @@ jobs:
       - name: Extra Kernel Options
         run: |
           cd $GITHUB_WORKSPACE/device_kernel
-          # First attempt: do not add extra config fragments.
-          # If the build fails on LTO / stack protector, add:
-          #   echo "CONFIG_LTO_NONE=y" >> ./arch/arm64/configs/${{ env.DEFCONFIG_NAME }}
-          #   echo "CONFIG_INIT_STACK_NONE=y" >> ./arch/arm64/configs/${{ env.DEFCONFIG_NAME }}
+          # OnePlusOSS sm8150 OOS12 tree is NOT self-contained: it references
+          # vendor/oplus/... via symlinks that point outside the repo.  The
+          # stock defconfig enables CONFIG_OPLUS_FG_IO_OPT=y, whose Kconfig
+          # lives at block/oplus_foreground_io_opt/Kconfig (dangling symlink).
+          # Disable that option and auto-neutralise every dangling `source`
+          # line, then report the full damage so we can judge whether this
+          # tree is salvageable at all.
+          python3 - <<'PYSELFHEAL'
+          import os, re
+          root = os.getcwd()
+          cfg = os.path.join(root, "arch/arm64/configs/vendor/sm8150-perf_defconfig")
 
+          # 1) turn off the config whose implementation is missing
+          if os.path.isfile(cfg):
+              lines = open(cfg, encoding="utf-8", errors="replace").read().splitlines(True)
+              n = 0
+              for i, l in enumerate(lines):
+                  if l.strip() == "CONFIG_OPLUS_FG_IO_OPT=y":
+                      lines[i] = "# CONFIG_OPLUS_FG_IO_OPT is not set\n"
+                      n += 1
+              open(cfg, "w", encoding="utf-8").writelines(lines)
+              print("autoheal: disabled CONFIG_OPLUS_FG_IO_OPT occurrences:", n)
+
+          # 2) block/Makefile refers to a directory that does not exist
+          mk = os.path.join(root, "block/Makefile")
+          if os.path.isfile(mk):
+              lines = open(mk, encoding="utf-8", errors="replace").read().splitlines(True)
+              for i, l in enumerate(lines):
+                  if "oplus_foreground_io_opt/" in l and l.lstrip().startswith("obj-"):
+                      lines[i] = "# [autoheal] " + l.lstrip()
+              open(mk, "w", encoding="utf-8").writelines(lines)
+
+          # 3) neutralise every Kconfig `source` whose target file is absent
+          disabled = []
+          for dirpath, dirs, files in os.walk(root):
+              dirs[:] = [d for d in dirs
+                         if d not in (".git", "out")
+                         and not os.path.islink(os.path.join(dirpath, d))]
+              for fn in files:
+                  if fn != "Kconfig" and not fn.startswith("Kconfig."):
+                      continue
+                  p = os.path.join(dirpath, fn)
+                  try:
+                      lines = open(p, encoding="utf-8", errors="replace").read().splitlines(True)
+                  except Exception:
+                      continue
+                  changed = False
+                  for i, l in enumerate(lines):
+                      m = re.match(r'^(\s*)source\s+"?([^"\s]+)"?\s*$', l.rstrip("\r\n"))
+                      if not m or "$" in m.group(2):
+                          continue
+                      t = m.group(2)
+                      cands = [os.path.join(root, t), os.path.join(dirpath, t)]
+                      if not any(os.path.isfile(c) for c in cands):
+                          lines[i] = m.group(1) + "# [autoheal] " + l.lstrip()
+                          disabled.append((os.path.relpath(p, root), t))
+                          changed = True
+                  if changed:
+                      open(p, "w", encoding="utf-8").writelines(lines)
+          print("=== autoheal: dangling Kconfig sources disabled: %d ===" % len(disabled))
+          for p, t in disabled:
+              print("    ", p, "->", t)
+
+          # 4) diagnostics: dangling symlinks + Makefile obj- dirs that are absent
+          broken = []
+          for dirpath, dirs, files in os.walk(root):
+              if ".git" in dirpath:
+                  continue
+              for n in dirs + files:
+                  fp = os.path.join(dirpath, n)
+                  if os.path.islink(fp) and not os.path.exists(fp):
+                      broken.append(os.path.relpath(fp, root))
+          print("=== diagnostics: broken symlinks: %d ===" % len(broken))
+          for b in broken[:80]:
+              print("    ", b)
+          missing_obj = []
+          for dirpath, dirs, files in os.walk(root):
+              if ".git" in dirpath or "/out" in dirpath:
+                  continue
+              for fn in files:
+                  if fn != "Makefile" and fn != "Kbuild":
+                      continue
+                  p = os.path.join(dirpath, fn)
+                  try:
+                      for l in open(p, encoding="utf-8", errors="replace"):
+                          m = re.search(r'^\s*obj-[^=]*\+=\s+([A-Za-z0-9_./-]+)/\s*$', l)
+                          if m and not os.path.isdir(os.path.join(dirpath, m.group(1))):
+                              missing_obj.append((os.path.relpath(p, root), m.group(1)))
+                  except Exception:
+                      pass
+          print("=== diagnostics: Makefile obj- dirs absent: %d ===" % len(missing_obj))
+          for p, d in missing_obj[:80]:
+              print("    ", p, "->", d)
+          PYSELFHEAL
       - name: Patch Kernel of Re:Kernel
         uses: ./.github/workflows/patch-rekernel
 
