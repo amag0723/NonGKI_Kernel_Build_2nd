@@ -622,6 +622,29 @@ jobs:
           else:
               print("=== fixup: distro aarch64-linux-gnu-as absent; "
                     "relying on integrated-as for scm.o ===")
+          # ---- v17: disable CONFIG_MODVERSIONS (Clang/LLD kcrctab link error) ----
+          # 4.14 + Clang: genksyms cannot generate a CRC for some EXPORT_SYMBOL
+          # (e.g. gsi_write_channel_scratch), so LLD fails at vmlinux link with
+          # "relocation R_AARCH64_ABS32 cannot be used against symbol __crc_*;
+          #  recompile with -fPIC". We build a built-in kernel with no external
+          # .ko modules (SukiSU is a builtin syscall-hook; KPM is off), so module
+          # versioning is unnecessary. Disabling it in the defconfig removes the
+          # entire kcrctab mechanism (all __crc_* references vanish).
+          _cfg = os.path.join(root,
+                              "arch/arm64/configs/vendor/sm8150-perf_defconfig")
+          if os.path.isfile(_cfg):
+              _cd = open(_cfg, encoding="utf-8", errors="replace").read()
+              _new = re.sub(r"^\s*CONFIG_MODVERSIONS[ =].*$",
+                            "# CONFIG_MODVERSIONS is not set", _cd, flags=re.M)
+              if _new != _cd or "CONFIG_MODVERSIONS" not in _cd:
+                  if "# CONFIG_MODVERSIONS is not set" not in _new:
+                      _new = _new.rstrip("\n") + "\n# CONFIG_MODVERSIONS is not set\n"
+                  open(_cfg, "w", encoding="utf-8").write(_new)
+                  print("=== fixup: v17 CONFIG_MODVERSIONS disabled in defconfig ===")
+              else:
+                  print("=== fixup: v17 CONFIG_MODVERSIONS already disabled ===")
+          else:
+              print("=== fixup: v17 defconfig not found at %s ===" % _cfg)
           # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
           # (kept for safety: if OP_8150_ADAPT is ever still defined on some
           # path, the reduced cam_defs_op.h is back-filled with the missing
