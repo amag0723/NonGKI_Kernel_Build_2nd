@@ -159,7 +159,24 @@ runs:
 
           elif [ "${{ env.SYSTEM_VERSION }}" == "older" ]; then
             echo "::group::[+] Starting install base packages..."
-            sudo apt-get update
+            # WB-DNSFIX: hosted runners intermittently fail resolving
+            # azure.archive.ubuntu.com ("Temporary failure resolving"), which
+            # stretched env prep from ~3.5 min to 45+ min (see runs 43034326471
+            # / 43041624924 on 2026-11-11). Override DNS with public resolvers
+            # and give apt explicit retry/timeout policy. Idempotent.
+            if ! grep -q "8.8.8.8" /etc/resolv.conf 2>/dev/null; then
+              sudo systemctl stop systemd-resolved 2>/dev/null || true
+              sudo cp /etc/resolv.conf /etc/resolv.conf.wbbak 2>/dev/null || true
+              printf 'nameserver 8.8.8.8\nnameserver 1.1.1.1\n' | sudo tee /etc/resolv.conf >/dev/null
+            fi
+            if [ ! -f /etc/apt/apt.conf.d/99wb-retry ]; then
+              sudo tee /etc/apt/apt.conf.d/99wb-retry >/dev/null <<'WBAPT'
+Acquire::Retries "10";
+Acquire::http::Timeout "20";
+Acquire::https::Timeout "20";
+WBAPT
+            fi
+            sudo apt-get update || true
             sudo apt-get install git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler wget curl cpio liblz4-tool lz4 libz3-4 elfutils -y
             sudo apt-get install p7zip p7zip-full -y
             sudo apt-get install libtinfo5 -y
