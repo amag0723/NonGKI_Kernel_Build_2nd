@@ -425,21 +425,60 @@ jobs:
                   total += n
                   print("  compat: %-42s %d site(s)" % ("selinux/rules.c", n))
 
-          # Stock OnePlus camera header: struct cam_dump_req_cmd is first
-          # declared inside two separate function prototypes, so clang sees
-          # two distinct types and rejects the .c definition.  A file-scope
-          # forward declaration makes every prototype share one tag.
+          # ---- v12: stock OnePlus camera header needs the FULL struct ----
+          # v11 (run 42998073130) proved a bare forward declaration is not
+          # enough: cam_context_utils.c dereferences cmd->buf_handle, and on
+          # this tree <media/cam_defs.h> resolves through OP_8150_ADAPT to
+          # cam_defs_op.h, which does NOT define struct cam_dump_req_cmd.
+          # Provide the complete definition (verbatim fields from
+          # include/uapi/media/cam_defs.h) guarded by a private macro, and
+          # guard the stock definition with the same macro, so the type is
+          # defined exactly once whichever branch the build takes.
+          CAM_GUARD = "SUKISU_CAM_DUMP_REQ_CMD_DEFINED"
+          cam_struct = (
+              "struct cam_dump_req_cmd {\n"
+              "\tint64_t  issue_req_id;\n"
+              "\tint32_t  session_handle;\n"
+              "\tint32_t  link_hdl;\n"
+              "\tint32_t  dev_handle;\n"
+              "\tint32_t  error_type;\n"
+              "\tuint32_t buf_handle;\n"
+              "\tint32_t  offset;\n"
+              "\tuint32_t reserved;\n"
+              "};\n")
           cam_h = os.path.join(root, "drivers", "media", "platform", "msm",
                                "camera", "cam_core", "cam_context.h")
           if os.path.isfile(cam_h):
               csrc = open(cam_h, encoding="utf-8", errors="replace").read()
               if COMPAT not in csrc and "struct cam_context;" in csrc:
-                  csrc = csrc.replace(
-                      "struct cam_context;",
-                      "struct cam_context;\nstruct cam_dump_req_cmd; /* [%s] */" % COMPAT, 1)
+                  block = ("struct cam_context;\n"
+                           "/* [%s] full definition; OP_8150_ADAPT omits it */\n" % COMPAT
+                           + "#ifndef %s\n" % CAM_GUARD
+                           + "#define %s\n" % CAM_GUARD
+                           + cam_struct
+                           + "#endif\n")
+                  csrc = csrc.replace("struct cam_context;", block.rstrip("\n"), 1)
                   open(cam_h, "w", encoding="utf-8").write(csrc)
                   total += 1
-                  print("  compat: cam_context.h forward declaration added")
+                  print("  compat: cam_context.h full cam_dump_req_cmd definition")
+          cam_defs = os.path.join(root, "include", "uapi", "media", "cam_defs.h")
+          if os.path.isfile(cam_defs):
+              dsrc = open(cam_defs, encoding="utf-8", errors="replace").read()
+              if CAM_GUARD not in dsrc:
+                  lines = dsrc.splitlines(True)
+                  start = next((i for i, l in enumerate(lines)
+                                if l.strip() == "struct cam_dump_req_cmd {"), None)
+                  end = None
+                  if start is not None:
+                      end = next((i for i in range(start + 1, len(lines))
+                                  if lines[i].strip() == "};"), None)
+                  if end is not None:
+                      lines[start:start] = ["#ifndef %s\n" % CAM_GUARD,
+                                           "#define %s\n" % CAM_GUARD]
+                      lines.insert(end + 3, "#endif /* %s */\n" % CAM_GUARD)
+                      open(cam_defs, "w", encoding="utf-8").writelines(lines)
+                      total += 1
+                      print("  compat: cam_defs.h stock definition guarded")
           print("=== fixup: 4.14 compat sites patched: %d ===" % total)
 
           # neutralise any Kconfig `source` whose target file is absent
