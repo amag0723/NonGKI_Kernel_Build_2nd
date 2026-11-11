@@ -725,14 +725,27 @@ jobs:
               if _hits:
                   _gnu_ld = sorted(_hits)[0]
           if _gnu_ld:
-              _lld_t = os.path.join(_cc_bin, "ld.lld")
-              try:
-                  if os.path.isfile(_lld_t) and not os.path.exists(_lld_t + ".orig"):
-                      _shutil.copy2(_lld_t, _lld_t + ".orig")
-                  _shutil.copy2(_gnu_ld, _lld_t)
-                  print("=== fixup: v19 ld.lld -> GNU ld (%s) ===" % _gnu_ld)
-              except Exception as _e:
-                  print("=== fixup: v19 copy failed:", _e)
+              # 4.14's Makefile adds -fuse-ld=lld ONLY when $(LD) is not GNU.
+              # Pointing ld.lld at GNU ld makes $(LD) -v report "GNU", so the
+              # Makefile stops passing -fuse-ld=lld; clang then falls back to the
+              # default `ld`, and for the aarch64 target it first searches the
+              # triple-named linker aarch64-linux-gnu-ld.  Proton-Clang ships
+              # clang-custom/bin/ld as the HOST x86 GNU ld (needed for host
+              # tools), so we must NOT overwrite `ld`.  Instead we expose the
+              # aarch64 GNU ld under both `ld.lld` (used by the direct $(LD)
+              # vmlinux link) and `aarch64-linux-gnu-ld` (used by clang's
+              # <triple>-ld search for the vdso/object links).  The host x86
+              # `ld` is left untouched.
+              for _name in ("ld.lld", "aarch64-linux-gnu-ld"):
+                  _t = os.path.join(_cc_bin, _name)
+                  try:
+                      if os.path.lexists(_t):
+                          os.remove(_t)
+                      _shutil.copy2(_gnu_ld, _t)
+                      os.chmod(_t, 0o755)
+                      print("=== fixup: v19 %s -> GNU ld (%s) ===" % (_name, _gnu_ld))
+                  except Exception as _e:
+                      print("=== fixup: v19 copy %s failed:" % _name, _e)
           else:
               print("=== fixup: v19 GNU ld not found; link may still fail ===")
           # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
