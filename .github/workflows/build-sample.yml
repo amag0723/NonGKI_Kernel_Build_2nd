@@ -575,6 +575,53 @@ jobs:
                                 "drivers", "power", "supply", "qcom", "storm-watch.h")
           print("=== fixup: storm-watch.h resolves after layout fixup: %s ==="
                 % os.path.exists(_probe))
+          # ---- v16: scm.o uses clang's integrated assembler (`.arch_extension
+          # sec`) + upgrade bundled aarch64 GNU as to distro binutils ----
+          # drivers/soc/qcom/scm.c contains inline asm with `.arch_extension
+          # sec`, which Proton-Clang's *bundled* GNU as (old binutils) rejects,
+          # aborting the whole file in ARM/32-bit mode.  Override the global
+          # `-no-integrated-as` (OnePlus Makefile:554) for scm.o only via a
+          # per-file CFLAGS so LLVM's MC assembler (which tolerates `sec`) is
+          # used.  No source change, no runtime-behaviour change.
+          import subprocess as _sp
+          import shutil as _shutil
+          _scm_make = os.path.join(root, "drivers", "soc", "qcom", "Makefile")
+          if os.path.isfile(_scm_make):
+              _mk = open(_scm_make, encoding="utf-8", errors="replace").read()
+              if "scm.o" in _mk and "integrated-as" not in _mk:
+                  if not _mk.endswith("\n"):
+                      _mk += "\n"
+                  _mk += ("# [SUKISU_V16] scm.o: use clang integrated assembler "
+                          "for `.arch_extension sec`\n"
+                          "CFLAGS_scm.o := -integrated-as\n")
+                  open(_scm_make, "w", encoding="utf-8").write(_mk)
+                  print("=== fixup: v16 per-file CFLAGS_scm.o += -integrated-as ===")
+              else:
+                  print("=== fixup: v16 scm.o flag already present ===")
+          else:
+              print("=== fixup: v16 drivers/soc/qcom/Makefile NOT found ===")
+          # Belt-and-braces: upgrade the bundled aarch64 GNU as to distro
+          # binutils (2.38 understands `.arch_extension sec`), in case any other
+          # file still reaches the external assembler.
+          _ws = os.path.dirname(root)
+          _apt_as = "/usr/bin/aarch64-linux-gnu-as"
+          _bundled_as = os.path.join(_ws, "clang-custom", "bin", "aarch64-linux-gnu-as")
+          if os.path.isfile(_apt_as):
+              try:
+                  _v = _sp.run([_apt_as, "--version"],
+                               capture_output=True, text=True, timeout=20)
+                  print("=== fixup: distro aarch64-linux-gnu-as:",
+                        (_v.stdout.splitlines()[0] if _v.stdout else "unknown"))
+              except Exception as _e:
+                  print("=== fixup: distro as version check err:", _e)
+              try:
+                  _shutil.copy2(_apt_as, _bundled_as)
+                  print("=== fixup: bundled aarch64-linux-gnu-as upgraded to distro ===")
+              except Exception as _e:
+                  print("=== fixup: bundled as upgrade skipped:", _e)
+          else:
+              print("=== fixup: distro aarch64-linux-gnu-as absent; "
+                    "relying on integrated-as for scm.o ===")
           # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
           # (kept for safety: if OP_8150_ADAPT is ever still defined on some
           # path, the reduced cam_defs_op.h is back-filled with the missing
