@@ -537,6 +537,44 @@ jobs:
           if _total:
               print("=== fixup: OP_8150_ADAPT -D removed from other "
                     "Makefiles/Kbuild: %d ===" % _total)
+          # ---- v15: emulate OnePlus's official source-tree layout ----
+          # Stock oplus power drivers (e.g. drivers/power/oplus/charger_ic/
+          # oplus_battery_msm8150Q.h:25) include headers via a path that assumes
+          # the kernel lives under a parent "kernel/msm-4.14/" directory:
+          #   #include "../../../../kernel/msm-4.14/drivers/power/supply/qcom/storm-watch.h"
+          # In OnePlus's full AOSP tree the kernel repo IS checked out at
+          # <aosp>/kernel/msm-4.14/, so that relative path resolves.  In our
+          # standalone build the repo root IS the kernel root, making the
+          # "kernel/msm-4.14/" segment dangling -> header not found.
+          # Fix: create <root>/kernel/msm-4.14 as a symlink -> ".." (the kernel
+          # root itself), mirroring the official layout so every
+          # ".../kernel/msm-4.14/..." reference resolves to real source.
+          # Idempotent and layout-independent (uses root = kernel root).
+          _kdir = os.path.join(root, "kernel")
+          os.makedirs(_kdir, exist_ok=True)
+          _link = os.path.join(_kdir, "msm-4.14")
+          # Use an absolute target (the kernel root itself) so the symlink
+          # resolves correctly on any OS.  A relative ".." target is
+          # misinterpreted by some resolve() implementations; absolute is
+          # unambiguous and maps <root>/kernel/msm-4.14 -> <root>.
+          _target = os.path.abspath(root)
+          if os.path.islink(_link):
+              if os.path.abspath(os.readlink(_link)) != _target:
+                  os.remove(_link)
+                  os.symlink(_target, _link)
+              print("=== fixup: kernel/msm-4.14 symlink present -> "
+                    "%s ===" % os.readlink(_link))
+          elif os.path.exists(_link):
+              print("=== fixup: kernel/msm-4.14 exists as real path; "
+                    "leaving it (layout may differ) ===")
+          else:
+              os.symlink(_target, _link)
+              print("=== fixup: kernel/msm-4.14 -> %s symlink created ==="
+                    % _target)
+          _probe = os.path.join(root, "kernel", "msm-4.14",
+                                "drivers", "power", "supply", "qcom", "storm-watch.h")
+          print("=== fixup: storm-watch.h resolves after layout fixup: %s ==="
+                % os.path.exists(_probe))
           # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
           # (kept for safety: if OP_8150_ADAPT is ever still defined on some
           # path, the reduced cam_defs_op.h is back-filled with the missing
