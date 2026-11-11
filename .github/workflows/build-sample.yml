@@ -187,6 +187,25 @@ jobs:
           python3 - <<'PYSELFHEAL'
           import os, re
           root = os.getcwd()
+
+          # 4.14 kernel + modern Proton-Clang: the `cc-option` probe for
+          # -fstack-protector-strong fails, aborting prepare-compiler-check
+          # (Makefile:1345).  Stack protector is a compile-time hardening
+          # option only, so switching the choice to NONE keeps every stock
+          # runtime feature intact while letting the build proceed.
+          cfg = os.path.join(root, "arch/arm64/configs/vendor/sm8150-perf_defconfig")
+          if os.path.isfile(cfg):
+              lines = open(cfg, encoding="utf-8", errors="replace").read().splitlines(True)
+              n = 0
+              for i, l in enumerate(lines):
+                  if l.strip() == "CONFIG_CC_STACKPROTECTOR_STRONG=y":
+                      lines[i] = "# CONFIG_CC_STACKPROTECTOR_STRONG is not set\n"
+                      n += 1
+              if n:
+                  lines.append("CONFIG_CC_STACKPROTECTOR_NONE=y\n")
+                  open(cfg, "w", encoding="utf-8").writelines(lines)
+              print("=== fixup: CONFIG_CC_STACKPROTECTOR_STRONG disabled: %d ===" % n)
+
           # neutralise any Kconfig `source` whose target file is absent
           disabled = []
           for dirpath, dirs, files in os.walk(root):
