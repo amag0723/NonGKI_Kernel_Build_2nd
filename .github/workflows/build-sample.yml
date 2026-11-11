@@ -728,15 +728,18 @@ jobs:
               # 4.14's Makefile adds -fuse-ld=lld ONLY when $(LD) is not GNU.
               # Pointing ld.lld at GNU ld makes $(LD) -v report "GNU", so the
               # Makefile stops passing -fuse-ld=lld; clang then falls back to the
-              # default `ld`, and for the aarch64 target it first searches the
-              # triple-named linker aarch64-linux-gnu-ld.  Proton-Clang ships
-              # clang-custom/bin/ld as the HOST x86 GNU ld (needed for host
-              # tools), so we must NOT overwrite `ld`.  Instead we expose the
-              # aarch64 GNU ld under both `ld.lld` (used by the direct $(LD)
-              # vmlinux link) and `aarch64-linux-gnu-ld` (used by clang's
-              # <triple>-ld search for the vdso/object links).  The host x86
-              # `ld` is left untouched.
-              for _name in ("ld.lld", "aarch64-linux-gnu-ld"):
+              # default `ld`.  Proton-Clang's clang resolves `-fuse-ld=ld` by
+              # FIRST looking for `ld` inside its OWN bin dir (clang-custom/bin),
+              # so it picks up clang-custom/bin/ld (the bundled x86 GNU ld) and
+              # never reaches the triple-named aarch64-linux-gnu-ld on PATH.
+              # Therefore we overwrite ALL three names under clang-custom/bin with
+              # the aarch64 GNU ld: `ld` (the -fuse-ld=ld default that vdso and
+              # vmlinux both end up using), `ld.lld` (direct $(LD) vmlinux link),
+              # and `aarch64-linux-gnu-ld` (clang's <triple>-ld fallback).
+              # Host tools (scripts/, dtc) link via host gcc + system /usr/bin/ld
+              # and never touch clang-custom/bin/ld (HOSTLD steps succeed before
+              # the vdso link), so this is safe.
+              for _name in ("ld", "ld.lld", "aarch64-linux-gnu-ld"):
                   _t = os.path.join(_cc_bin, _name)
                   try:
                       if os.path.lexists(_t):
