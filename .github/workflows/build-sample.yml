@@ -645,6 +645,61 @@ jobs:
                   print("=== fixup: v17 CONFIG_MODVERSIONS already disabled ===")
           else:
               print("=== fixup: v17 defconfig not found at %s ===" % _cfg)
+          # ---- v18: fix LLD "improper alignment for R_AARCH64_LDST32_ABS_LO12_NC" ----
+          # 4.14 + Clang/LLD dies linking vmlinux with:
+          #   ld.lld: error: ... improper alignment for relocation
+          #   R_AARCH64_LDST32_ABS_LO12_NC: 0x...BFD is not aligned to 4 bytes
+          # The `_NC` variant means "no-check", but the LLD bundled in Proton-
+          # Clang 13 still enforces alignment here (later LLD relaxed it).
+          # Primary fix: upgrade ld.lld. Fallback: cap segment page size
+          # (OnePlus 7 Pro uses 4K pages; LLD defaults to 64K, which can place
+          # symbols on non-4-byte boundaries).
+          _cc_bin = os.path.join(_ws, "clang-custom", "bin")
+          _lld_cands = []
+          if os.path.isdir(_cc_bin):
+              for _n in ("ld.lld", "lld"):
+                  _p = os.path.join(_cc_bin, _n)
+                  if os.path.isfile(_p):
+                      _lld_cands.append(_p)
+          _new_lld = None
+          try:
+              _sp.run(["apt-get", "update"], capture_output=True, text=True, timeout=120)
+              _r = _sp.run(["apt-get", "install", "-y", "lld"],
+                           capture_output=True, text=True, timeout=300)
+              if _r.returncode == 0:
+                  import glob as _gl
+                  _hits = (_gl.glob("/usr/bin/ld.lld*") + _gl.glob("/usr/bin/lld*"))
+                  if _hits:
+                      _new_lld = _hits[0]
+                      print("=== fixup: v18 distro ld.lld found:", _new_lld)
+          except Exception as _e:
+              print("=== fixup: v18 apt lld install skipped:", _e)
+          if _new_lld and _lld_cands:
+              for _lp in _lld_cands:
+                  try:
+                      _shutil.copy2(_new_lld, _lp)
+                      print("=== fixup: v18 ld.lld upgraded -> %s ===" % _lp)
+                  except Exception as _e:
+                      print("=== fixup: v18 ld.lld copy failed:", _e)
+          elif _lld_cands:
+              print("=== fixup: v18 no newer ld.lld; relying on page-size fallback ===")
+          else:
+              print("=== fixup: v18 no ld.lld candidate under %s ===" % _cc_bin)
+          # fallback: cap segment page size in arch/arm64/Makefile
+          _amk = os.path.join(root, "arch/arm64/Makefile")
+          if os.path.isfile(_amk):
+              _at = open(_amk, encoding="utf-8", errors="replace").read()
+              if "max-page-size" not in _at:
+                  _al = _at.split("\n")
+                  for _i, _l in enumerate(_al):
+                      if _l.startswith("LDFLAGS_vmlinux") and ":=" in _l:
+                          _al.insert(_i + 1,
+                                     "LDFLAGS_vmlinux\t+=-z max-page-size=0x1000")
+                          break
+                  open(_amk, "w", encoding="utf-8").write("\n".join(_al))
+                  print("=== fixup: v18 LDFLAGS_vmlinux += -z max-page-size=0x1000 ===")
+              else:
+                  print("=== fixup: v18 max-page-size already present ===")
           # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
           # (kept for safety: if OP_8150_ADAPT is ever still defined on some
           # path, the reduced cam_defs_op.h is back-filled with the missing
