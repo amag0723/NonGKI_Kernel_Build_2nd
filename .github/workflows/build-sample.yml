@@ -251,6 +251,31 @@ jobs:
                   open(cfg, "w", encoding="utf-8").writelines(lines)
               print("=== fixup: CONFIG_CC_STACKPROTECTOR_STRONG disabled: %d ===" % n)
 
+          # clang-13 (Proton-Clang) vs the stock 4.14 OnePlus Makefile:
+          # Makefile:1003-1015 uses cc-option to PROMOTE several legacy
+          # warnings to hard errors, e.g. -Werror=strict-prototypes.  The
+          # OnePlus vendor code contains old-style definitions such as
+          #     void adjust_sched_assist_input_ctrl(){ ... }
+          # which clang-13 rejects outright.  Clang-10 (the stock toolchain)
+          # treated these as plain warnings, so restoring that behaviour does
+          # not change a single line of stock code or weaken real errors
+          # (undefined symbols / type errors still fail at compile/link).
+          # Append AFTER all the -Werror= lines: clang uses last-one-wins.
+          mk = os.path.join(root, "Makefile")
+          wno = ("strict-prototypes", "implicit-int", "date-time",
+                 "designated-init", "incompatible-pointer-types")
+          if os.path.isfile(mk):
+              txt = open(mk, encoding="utf-8", errors="replace").read()
+              if "SUKISU_WERROR_FIXUP" not in txt:
+                  extra = ("\n# SUKISU_WERROR_FIXUP: clang-13 vs 4.14 legacy code\n"
+                           "KBUILD_CFLAGS += " +
+                           " ".join("-Wno-error=" + w for w in wno) + "\n")
+                  with open(mk, "a", encoding="utf-8") as f:
+                      f.write(extra)
+                  print("=== fixup: appended %d -Wno-error flags to Makefile ===" % len(wno))
+              else:
+                  print("=== fixup: werror override already present ===")
+
           # neutralise any Kconfig `source` whose target file is absent
           disabled = []
           for dirpath, dirs, files in os.walk(root):
