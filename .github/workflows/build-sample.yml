@@ -805,6 +805,65 @@ jobs:
                       except Exception as _e20:
                           print('=== fixup: v20 write failed %s: %s ===' % (_p20, _e20))
           print('=== fixup: v20 ksu bool alignment, files patched: %d ===' % _v20_files)
+          # ---- v21: kallsyms "out of range in relative mode" ----
+          # run 43058152655 (v20) finally got past LD vmlinux (v20 bool
+          # alignment was the real fix) but died at KSYM pass 1:
+          #   kallsyms failure: relative symbol value 0xffffff8008080000
+          #   out of range in relative mode
+          # With --base-relative and no --absolute-percpu (arm64 cannot set
+          # KALLSYMS_ABSOLUTE_PERCPU), the overflow check needs a symbol more
+          # than 4 GiB away from the lowest symbol address; a ~100 MiB image
+          # cannot produce that span, so some symbol is linked far outside
+          # the image (bfd orphan placement puts it near 0; lld never did,
+          # which is why the upstream author never saw this).  The
+          # non-relative kallsyms encoding (_text +/- off, full 64-bit
+          # addresses) has NO range check at all, so disable
+          # CONFIG_KALLSYMS_BASE_RELATIVE in the defconfig.  Runtime
+          # consumers (SukiSU syscall hook, SuSFS) resolve via
+          # kallsyms_lookup_name and are format-agnostic.  Also teach
+          # scripts/kallsyms.c to name the offending symbol, in case the
+          # stray symbol breaks something else and we need to identify it.
+          _re21 = __import__('re')
+          _cfg21 = os.path.join(root,
+                                "arch/arm64/configs/vendor/sm8150-perf_defconfig")
+          if os.path.isfile(_cfg21):
+              _c21 = open(_cfg21, encoding="utf-8", errors="replace").read()
+              _n21 = _re21.sub(r"^\s*CONFIG_KALLSYMS_BASE_RELATIVE[ =].*$",
+                               "# CONFIG_KALLSYMS_BASE_RELATIVE is not set",
+                               _c21, flags=_re21.M)
+              if _n21 != _c21 or "CONFIG_KALLSYMS_BASE_RELATIVE" not in _c21:
+                  if "# CONFIG_KALLSYMS_BASE_RELATIVE is not set" not in _n21:
+                      _n21 = _n21.rstrip("\n") + \
+                          "\n# CONFIG_KALLSYMS_BASE_RELATIVE is not set\n"
+                  open(_cfg21, "w", encoding="utf-8").write(_n21)
+                  print("=== fixup: v21 CONFIG_KALLSYMS_BASE_RELATIVE disabled in defconfig ===")
+              else:
+                  print("=== fixup: v21 CONFIG_KALLSYMS_BASE_RELATIVE already disabled ===")
+          else:
+              print("=== fixup: v21 defconfig not found at %s ===" % _cfg21)
+          _ks21 = os.path.join(root, "scripts", "kallsyms.c")
+          if os.path.isfile(_ks21):
+              _kt21 = open(_ks21, encoding="utf-8", errors="replace").read()
+              if "v21ksudiag" in _kt21:
+                  print("=== fixup: v21 kallsyms.c already patched ===")
+              elif "out of range in relative mode" not in _kt21:
+                  print("=== fixup: v21 kallsyms.c message absent; skip diag ===")
+              else:
+                  _kt21 = _kt21.replace(
+                      "out of range in relative mode\\n",
+                      "out of range in relative mode (v21ksudiag sym=%s)\\n", 1)
+                  _i21 = _kt21.find('symbol_absolute(&table[i]) ? "absolute" : "relative",')
+                  _j21 = _kt21.find("table[i].addr);", _i21)
+                  if _i21 >= 0 and _j21 >= 0:
+                      _kt21 = (_kt21[:_j21] +
+                               "table[i].addr, (char *)table[i].sym + 1);" +
+                               _kt21[_j21 + len("table[i].addr);"):])
+                      open(_ks21, "w", encoding="utf-8").write(_kt21)
+                      print("=== fixup: v21 kallsyms.c sym-name diagnostic added ===")
+                  else:
+                      print("=== fixup: v21 kallsyms.c anchor not found; diag skipped ===")
+          else:
+              print("=== fixup: v21 scripts/kallsyms.c not found ===")
           # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
           # (kept for safety: if OP_8150_ADAPT is ever still defined on some
           # path, the reduced cam_defs_op.h is back-filled with the missing
