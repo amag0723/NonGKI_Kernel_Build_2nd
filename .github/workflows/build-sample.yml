@@ -180,6 +180,51 @@ jobs:
       - name: Extra Kernel Options
         run: |
           cd $GITHUB_WORKSPACE/device_kernel
+          # The stock 4.14 OnePlus Makefile hardcodes `-no-integrated-as`
+          # (Makefile:554) and derives clang --prefix from
+          # `which aarch64-linux-gnu-elfedit` (Makefile:547).  build-env only
+          # exports CROSS_COMPILE for Proton-Clang without installing the
+          # cross binutils, so --prefix is empty and clang falls back to the
+          # host x86 `as` in clang-custom/bin, which rejects arm64 `-EL`:
+          #   clang-custom/bin/as: unrecognized option '-EL'
+          # Fix 1: install real cross binutils so clang resolves <triple>-as.
+          # Fix 2: a dispatcher on clang-custom/bin/as as a safety net, while
+          #        preserving the original host assembler as `as.host` so the
+          #        HOSTCC (scripts/dtc, genksyms, ...) builds are unaffected.
+          sudo apt-get update -qq || echo "WARN: apt update failed"
+          sudo apt-get install -y binutils-aarch64-linux-gnu || echo "WARN: cross binutils install failed"
+          python3 - <<'PYASWRAP'
+          import os, shutil
+          ws = os.path.dirname(os.getcwd())
+          cb = os.path.join(ws, "clang-custom", "bin")
+          host_as = os.path.join(cb, "as")
+          cross64 = os.path.join(cb, "aarch64-linux-gnu-as")
+          backup = os.path.join(cb, "as.host")
+          if os.path.isfile(cross64) and os.path.isfile(host_as) and not os.path.exists(backup):
+              shutil.copy2(host_as, backup)
+              script = (
+                  "#!/bin/bash\n"
+                  'HERE="$(cd "$(dirname "$0")" && pwd)"\n'
+                  'for a in "$@"; do\n'
+                  '  case "$a" in\n'
+                  '    -EL|-EB)\n'
+                  '      "$HERE/aarch64-linux-gnu-as" "$@" && exit 0\n'
+                  '      if [ -x "$HERE/arm-linux-gnueabi-as" ]; then\n'
+                  '        "$HERE/arm-linux-gnueabi-as" "$@" && exit 0\n'
+                  '      fi\n'
+                  '      exec "$HERE/as.host" "$@"\n'
+                  '      ;;\n'
+                  '  esac\n'
+                  'done\n'
+                  'exec "$HERE/as.host" "$@"\n'
+              )
+              with open(host_as, "w", encoding="utf-8", newline="\n") as f:
+                  f.write(script)
+              os.chmod(host_as, 0o755)
+              print("=== fixup: as dispatcher installed (host=as.host, arm=GNU cross as) ===")
+          else:
+              print("=== fixup: as dispatcher skipped (already present or layout differs) ===")
+          PYASWRAP
           # With the official vendor tree merged, everything should resolve.
           # This step only REPORTS any remaining dangling references (and
           # neutralises a `source` line only if its target is genuinely absent),
