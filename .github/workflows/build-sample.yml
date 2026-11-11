@@ -726,15 +726,35 @@ jobs:
               if _hits:
                   _gnu_ld = sorted(_hits)[0]
           if _gnu_ld:
-              _t = os.path.join(_cc_bin, 'ld.lld')
-              try:
-                  if os.path.lexists(_t):
-                      os.remove(_t)
-                  _shutil.copy2(_gnu_ld, _t)
-                  os.chmod(_t, 0o755)
-                  print('=== fixup: v19 ld.lld -> GNU ld (%s) ===' % _gnu_ld)
-              except Exception as _e:
-                  print('=== fixup: v19 ld.lld copy failed:', _e)
+              # Replace EVERY ld.lld the build can resolve via PATH.  The kernel
+              # uses `LD=ld.lld`; which binary actually wins depends on PATH
+              # order at link time.  v19.3 proved that merely overwriting
+              # clang-custom/bin/ld.lld is NOT enough: the real LLVM lld at
+              # /usr/bin/ld.lld (or wherever `which ld.lld` points) precedes it
+              # in PATH and the final vmlinux link still invoked true lld
+              # (error header was `ld.lld:` not `ld:`).  So nuke all of them.
+              # Host tools never call ld.lld (they use `ld`/gcc), so this is safe.
+              _targets = []
+              _t_cc = os.path.join(_cc_bin, 'ld.lld')
+              if os.path.lexists(_t_cc):
+                  _targets.append(_t_cc)
+              for _sys in ('/usr/bin/ld.lld',):
+                  if os.path.lexists(_sys):
+                      _targets.append(_sys)
+              _t_which = _shutil.which('ld.lld')
+              if _t_which and _t_which not in _targets:
+                  _targets.append(_t_which)
+              if not _targets:
+                  print('=== fixup: v19 no ld.lld target found; link will fail ===')
+              for _t in _targets:
+                  try:
+                      if os.path.lexists(_t):
+                          os.remove(_t)
+                      _shutil.copy2(_gnu_ld, _t)
+                      os.chmod(_t, 0o755)
+                      print('=== fixup: v19 %s -> GNU ld (%s) ===' % (_t, _gnu_ld))
+                  except Exception as _e:
+                      print('=== fixup: v19 copy %s failed:' % _t, _e)
               _vmk = os.path.join(root, 'arch/arm64/kernel/vdso/Makefile')
               if os.path.isfile(_vmk):
                   _v = open(_vmk, encoding='utf-8').read()
