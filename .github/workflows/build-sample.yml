@@ -345,6 +345,103 @@ jobs:
                   n = 1
               print("=== fixup: cpu_spoof.c stubbed for <5.10: %d ===" % n)
 
+          # ---- v11: route newly-added SukiSU code through its own 4.14 shims ----
+          # v10 (run 42995708433) got past cpu_spoof and exposed 6 errors in
+          # the single ksu_main.o translation unit, plus 1 in a stock OnePlus
+          # camera driver.  kernel_compat.h ALREADY provides ksu_access_ok,
+          # ksu_strncpy_from_user_nofault and the old-kernel helpers; the new
+          # v4.3.0 code merely calls the 5.x names directly.
+          COMPAT = "SUKISU_414_COMPAT_V11"
+          ksu_dir = os.path.join(root, "drivers", "kernelsu")
+
+          def compat_sub(rel, pairs):
+              p = os.path.join(ksu_dir, rel)
+              if not os.path.isfile(p):
+                  print("  compat: missing", rel)
+                  return 0
+              src = open(p, encoding="utf-8", errors="replace").read()
+              if COMPAT in src:
+                  print("  compat: %-42s already patched" % rel)
+                  return 0
+              n = 0
+              for old, new in pairs:
+                  n += src.count(old)
+                  src = src.replace(old, new)
+              if n:
+                  src = "// [%s] 4.14 API compatibility\n" % COMPAT + src
+                  open(p, "w", encoding="utf-8").write(src)
+              print("  compat: %-42s %d site(s)" % (rel, n))
+              return n
+
+          total = 0
+          total += compat_sub(os.path.join("extension", "kpm", "kpm.c"),
+                              [("if (!access_ok(", "if (!ksu_access_ok(")])
+          total += compat_sub(os.path.join("supercall", "dispatch.c"),
+                              [("kvcalloc(", "kcalloc(")])
+          # NOTE: event.c already calls ksu_strncpy_from_user_nofault in two
+          # other places; match the WHOLE un-migrated line so a plain
+          # substring replace cannot turn those into ksu_ksu_...
+          total += compat_sub(os.path.join("sulog", "event.c"),
+                              [("            strncpy_from_user_nofault(arg, "
+                                "(const void __user *)untagged_addr((unsigned long)arg_user), sizeof(arg));",
+                                "            ksu_strncpy_from_user_nofault(arg, "
+                                "(const void __user *)untagged_addr((unsigned long)arg_user), sizeof(arg));")])
+
+          # rules.c: the <5.10 #else branches reference `pol`, which is only
+          # declared for >=5.10.  4.14 has no ->latest_granting; pass 0 to
+          # avc_ss_reset (the classic force-flush) instead.  Keep the >=5.10
+          # branches untouched.
+          rules = os.path.join(ksu_dir, "selinux", "rules.c")
+          if os.path.isfile(rules):
+              rsrc = open(rules, encoding="utf-8", errors="replace").read()
+              if COMPAT not in rsrc:
+                  lines = rsrc.splitlines(True)
+                  depth = 0
+                  watch = None
+                  old_branch = False
+                  n = 0
+                  for i, l in enumerate(lines):
+                      s = l.strip()
+                      if s.startswith("#if"):
+                          depth += 1
+                          if "LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0)" in s:
+                              watch = depth
+                      elif s.startswith("#elif") and depth == watch:
+                          old_branch = False
+                      elif s.startswith("#else") and depth == watch:
+                          old_branch = True
+                      elif s.startswith("#endif"):
+                          if depth == watch:
+                              watch = None
+                              old_branch = False
+                          depth -= 1
+                      elif old_branch and "reset_avc_cache(pol->latest_granting)" in s:
+                          lines[i] = l.replace("reset_avc_cache(pol->latest_granting)",
+                                               "reset_avc_cache(0)")
+                          n += 1
+                  if n:
+                      lines.insert(0, "// [%s] 4.14 AVC flush\n" % COMPAT)
+                      open(rules, "w", encoding="utf-8").writelines(lines)
+                  total += n
+                  print("  compat: %-42s %d site(s)" % ("selinux/rules.c", n))
+
+          # Stock OnePlus camera header: struct cam_dump_req_cmd is first
+          # declared inside two separate function prototypes, so clang sees
+          # two distinct types and rejects the .c definition.  A file-scope
+          # forward declaration makes every prototype share one tag.
+          cam_h = os.path.join(root, "drivers", "media", "platform", "msm",
+                               "camera", "cam_core", "cam_context.h")
+          if os.path.isfile(cam_h):
+              csrc = open(cam_h, encoding="utf-8", errors="replace").read()
+              if COMPAT not in csrc and "struct cam_context;" in csrc:
+                  csrc = csrc.replace(
+                      "struct cam_context;",
+                      "struct cam_context;\nstruct cam_dump_req_cmd; /* [%s] */" % COMPAT, 1)
+                  open(cam_h, "w", encoding="utf-8").write(csrc)
+                  total += 1
+                  print("  compat: cam_context.h forward declaration added")
+          print("=== fixup: 4.14 compat sites patched: %d ===" % total)
+
           # neutralise any Kconfig `source` whose target file is absent
           disabled = []
           for dirpath, dirs, files in os.walk(root):
