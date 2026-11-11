@@ -700,57 +700,58 @@ jobs:
                   print("=== fixup: v18 LDFLAGS_vmlinux += -z max-page-size=0x1000 ===")
               else:
                   print("=== fixup: v18 max-page-size already present ===")
-          # ---- v19: link vmlinux with GNU ld (bfd) instead of LLD ----
-          # R_AARCH64_LDST32_ABS_LO12_NC "improper alignment" is an LLD 13-15
-          # bug: the `_NC` reloc means "no check", yet those LLD versions still
-          # enforced 4-byte alignment (the relaxation only landed in LLD 16+,
-          # which is not in the runner's default apt repos, so v18's
-          # `apt-get install lld` only fetched lld-14 and could not fix it).
-          # For a 4.14 (non-GKI) kernel the robust path is GNU ld/bfd -- exactly
-          # what 4.14 was designed to link with, and which does NOT perform this
-          # bogus alignment check.  binutils-aarch64-linux-gnu is already
-          # installed (apt step), providing aarch64-linux-gnu-ld[.bfd].
-          # We overwrite clang-custom/bin/ld.lld so `LD=ld.lld` (EXTRA_CMDS)
-          # transparently invokes GNU ld; the kernel Makefile detects "GNU" via
-          # `$(LD) -v` and uses the standard bfd flag set.
+          # ---- v19: link with aarch64 GNU ld (bfd) WITHOUT breaking host tools ----
+          # R_AARCH64_LDST32_ABS_LO12_NC improper-alignment is an LLD <16 bug; for a
+          # 4.14 (non-GKI) kernel the robust fix is GNU ld/bfd, which 4.14 was
+          # designed for and which does NOT perform that bogus alignment check.
+          # binutils-aarch64-linux-gnu is already installed (apt step), giving
+          # /usr/bin/aarch64-linux-gnu-ld[.bfd].  CRITICAL: do NOT overwrite
+          # clang-custom/bin/ld -- that x86 GNU ld is required by host tools like
+          # scripts/basic/fixdep, which link via `clang -fuse-ld=ld` (v19.2 proved
+          # overwriting `ld` breaks fixdep with 'ld returned 1 exit status').
+          # Plan: vmlinux/modules link via $(LD)=ld.lld -> point it at GNU ld;
+          # the vDSO links via $(CC) with no -fuse-ld, so clang picks
+          # clang-custom/bin/ld (x86) and fails.  Inject -fuse-ld=<aarch64 GNU ld
+          # abs path> into arch/arm64/kernel/vdso/Makefile (cmd_vdsold) instead.
           import glob as _g19
+          if '_cc_bin' not in globals():
+              _cc_bin = os.path.join(root, 'clang-custom', 'bin')
           _gnu_ld = None
-          for _cand in ("/usr/bin/aarch64-linux-gnu-ld.bfd",
-                        "/usr/bin/aarch64-linux-gnu-ld"):
+          for _cand in ('/usr/bin/aarch64-linux-gnu-ld.bfd', '/usr/bin/aarch64-linux-gnu-ld'):
               if os.path.isfile(_cand):
                   _gnu_ld = _cand
                   break
           if _gnu_ld is None:
-              _hits = _g19.glob("/usr/bin/aarch64-linux-gnu-ld*")
+              _hits = _g19.glob('/usr/bin/aarch64-linux-gnu-ld*')
               if _hits:
                   _gnu_ld = sorted(_hits)[0]
           if _gnu_ld:
-              # 4.14's Makefile adds -fuse-ld=lld ONLY when $(LD) is not GNU.
-              # Pointing ld.lld at GNU ld makes $(LD) -v report "GNU", so the
-              # Makefile stops passing -fuse-ld=lld; clang then falls back to the
-              # default `ld`.  Proton-Clang's clang resolves `-fuse-ld=ld` by
-              # FIRST looking for `ld` inside its OWN bin dir (clang-custom/bin),
-              # so it picks up clang-custom/bin/ld (the bundled x86 GNU ld) and
-              # never reaches the triple-named aarch64-linux-gnu-ld on PATH.
-              # Therefore we overwrite ALL three names under clang-custom/bin with
-              # the aarch64 GNU ld: `ld` (the -fuse-ld=ld default that vdso and
-              # vmlinux both end up using), `ld.lld` (direct $(LD) vmlinux link),
-              # and `aarch64-linux-gnu-ld` (clang's <triple>-ld fallback).
-              # Host tools (scripts/, dtc) link via host gcc + system /usr/bin/ld
-              # and never touch clang-custom/bin/ld (HOSTLD steps succeed before
-              # the vdso link), so this is safe.
-              for _name in ("ld", "ld.lld", "aarch64-linux-gnu-ld"):
-                  _t = os.path.join(_cc_bin, _name)
-                  try:
-                      if os.path.lexists(_t):
-                          os.remove(_t)
-                      _shutil.copy2(_gnu_ld, _t)
-                      os.chmod(_t, 0o755)
-                      print("=== fixup: v19 %s -> GNU ld (%s) ===" % (_name, _gnu_ld))
-                  except Exception as _e:
-                      print("=== fixup: v19 copy %s failed:" % _name, _e)
+              _t = os.path.join(_cc_bin, 'ld.lld')
+              try:
+                  if os.path.lexists(_t):
+                      os.remove(_t)
+                  _shutil.copy2(_gnu_ld, _t)
+                  os.chmod(_t, 0o755)
+                  print('=== fixup: v19 ld.lld -> GNU ld (%s) ===' % _gnu_ld)
+              except Exception as _e:
+                  print('=== fixup: v19 ld.lld copy failed:', _e)
+              _vmk = os.path.join(root, 'arch/arm64/kernel/vdso/Makefile')
+              if os.path.isfile(_vmk):
+                  _v = open(_vmk, encoding='utf-8').read()
+                  _old = 'cmd_vdsold = $(CC) $(c_flags) -Wl,-n -Wl,-T $^ -o $@'
+                  _new = 'cmd_vdsold = $(CC) -fuse-ld=%s $(c_flags) -Wl,-n -Wl,-T $^ -o $@' % _gnu_ld
+                  if _old in _v and '-fuse-ld=' not in _v:
+                      _v = _v.replace(_old, _new)
+                      open(_vmk, 'w', encoding='utf-8').write(_v)
+                      print('=== fixup: v19 vdso Makefile -fuse-ld=%s ===' % _gnu_ld)
+                  elif '-fuse-ld=' in _v:
+                      print('=== fixup: v19 vdso Makefile already patched ===')
+                  else:
+                      print('=== fixup: v19 vdso Makefile cmd_vdsold not found ===')
+              else:
+                  print('=== fixup: v19 vdso Makefile NOT FOUND at', _vmk)
           else:
-              print("=== fixup: v19 GNU ld not found; link may still fail ===")
+              print('=== fixup: v19 GNU ld not found; link will fail ===')
           # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
           # (kept for safety: if OP_8150_ADAPT is ever still defined on some
           # path, the reduced cam_defs_op.h is back-filled with the missing
