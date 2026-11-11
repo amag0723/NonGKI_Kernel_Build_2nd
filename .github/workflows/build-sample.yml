@@ -479,6 +479,105 @@ jobs:
                       open(cam_defs, "w", encoding="utf-8").writelines(lines)
                       total += 1
                       print("  compat: cam_defs.h stock definition guarded")
+          # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
+          # OplusKernelEnvConfig.mk adds -DOP_8150_ADAPT when
+          # TARGET_PRODUCT=msmnile (and -DVENDOR_EDIT unconditionally).
+          # <media/cam_defs.h> then expands to cam_defs_op.h ONLY, which is a
+          # STRICT SUBSET of the full cam_defs.h #else branch: 17 CAM_* macros
+          # and 3 structs are missing, yet the stock camera drivers reference
+          # 9 of those macros.  v12 (run 43000780327) stopped at
+          # cam_node.c:883 `case CAM_DUMP_REQ`.  A full-tree static audit of
+          # the 125 camera .c files found the rest in cam_eeprom_core.c
+          # (calibration opcodes) and cam_sensor_core.c (OEM opcodes), plus
+          # 3 struct definitions used by 9/1/0 files.
+          # Append them verbatim from the full header.  Every existing opcode
+          # (CAM_GET_DPC_DATA, CAM_GET_FUSE_ID, CAM_COMMON_OPCODE_MAX) keeps
+          # its OP_8150_ADAPT value, so the camera HAL ABI is unchanged.
+          # Per-symbol #ifndef guards make this idempotent and future-proof;
+          # the dump struct shares v12's guard so it is defined exactly once
+          # whichever of cam_context.h / cam_defs_op.h is included first.
+          V13 = "SUKISU_414_CAM_UAPI_V13"
+          op_h = os.path.join(root, "include", "uapi", "media", "cam_defs_op.h")
+          if os.path.isfile(op_h):
+              v13_src = open(op_h, encoding="utf-8", errors="replace").read()
+              if V13 not in v13_src:
+                  macros = [
+                      ("CAM_GET_OIS_GYRO_OFFSET", "(CAM_COMMON_OPCODE_BASE + 0xA)"),
+                      ("CAM_GET_OIS_HALL_POSITION", "(CAM_COMMON_OPCODE_BASE + 0xB)"),
+                      ("CAM_OIS_GYRO_OFFSET_CALIBRATION", "(CAM_COMMON_OPCODE_BASE + 0xC)"),
+                      ("CAM_GET_OIS_EIS_HALL", "(CAM_COMMON_OPCODE_BASE + 0xD)"),
+                      ("CAM_SET_GYRO_POWER_STATUS", "(CAM_COMMON_OPCODE_BASE + 0xE)"),
+                      ("CAM_GET_GYRO_NOISE", "(CAM_COMMON_OPCODE_BASE + 0xF)"),
+                      ("CAM_WRITE_CALIBRATION_DATA", "(CAM_COMMON_OPCODE_BASE + 0x10)"),
+                      ("CAM_CHECK_CALIBRATION_DATA", "(CAM_COMMON_OPCODE_BASE + 0x11)"),
+                      ("CAM_WRITE_AE_SYNC_DATA", "(CAM_COMMON_OPCODE_BASE + 0x12)"),
+                      ("CAM_GET_GYRO_ENERGY", "(CAM_COMMON_OPCODE_BASE + 0x13)"),
+                      ("CAM_DUMP_REQ", "(CAM_COMMON_OPCODE_BASE_v2 + 0x3)"),
+                      ("CAM_OEM_COMMON_OPCODE_BASE", "0x8000"),
+                      ("CAM_OEM_RW_SIZE_MAX", "128"),
+                      ("CAM_OEM_RW_REG", "(CAM_OEM_COMMON_OPCODE_BASE + 1)"),
+                      ("CAM_OEM_GET_ID", "(CAM_OEM_COMMON_OPCODE_BASE + 2)"),
+                      ("CAM_OEM_CMD_READ_DEV", "0"),
+                      ("CAM_OEM_CMD_WRITE_DEV", "1"),
+                  ]
+                  v13 = ["", "/* [%s] OP_8150_ADAPT reduced UAPI, verbatim from cam_defs.h */" % V13,
+                         "#ifndef " + V13, "#define " + V13, ""]
+                  for name, val in macros:
+                      v13 += ["#ifndef " + name,
+                              "#define " + name + " " + val,
+                              "#endif"]
+                  v13 += [
+                      "",
+                      "#ifndef SUKISU_CAM_DUMP_REQ_CMD_DEFINED",
+                      "#define SUKISU_CAM_DUMP_REQ_CMD_DEFINED",
+                      "struct cam_dump_req_cmd {",
+                      "\tint64_t        issue_req_id;",
+                      "\tint32_t        session_handle;",
+                      "\tint32_t        link_hdl;",
+                      "\tint32_t        dev_handle;",
+                      "\tint32_t        error_type;",
+                      "\tuint32_t       buf_handle;",
+                      "\tint32_t        offset;",
+                      "\tuint32_t       reserved;",
+                      "};",
+                      "#endif",
+                      "",
+                      "#ifndef SUKISU_CAM_OEM_RW_CTL_DEFINED",
+                      "#define SUKISU_CAM_OEM_RW_CTL_DEFINED",
+                      "struct cam_oem_rw_ctl {",
+                      "\tint32_t   cmd_code;",
+                      "\tuint64_t  data_addr;",
+                      "\tint32_t   reg_addr;",
+                      "\tuint32_t  slave_addr;",
+                      "\tuint32_t  reg_data_type;",
+                      "\tint32_t   reg_addr_type;",
+                      "\tint16_t   num_bytes;",
+                      "};",
+                      "#endif",
+                      "",
+                      "#ifndef SUKISU_CAM_OEM_WRITE_I2C_REG_ARRAY_DEFINED",
+                      "#define SUKISU_CAM_OEM_WRITE_I2C_REG_ARRAY_DEFINED",
+                      "struct cam_oem_write_i2c_reg_array {",
+                      "\tuint32_t reg_addr;",
+                      "\tuint32_t reg_data;",
+                      "\tuint32_t delay;",
+                      "\tuint32_t data_mask;",
+                      "};",
+                      "#endif",
+                      "",
+                      "#endif /* %s */" % V13,
+                      "",
+                  ]
+                  block = "\n".join(v13) + "\n"
+                  marker = "#endif /* __UAPI_CAM_DEFS_H__ */"
+                  at = v13_src.rfind(marker)
+                  if at >= 0:
+                      v13_src = v13_src[:at] + block + v13_src[at:]
+                  else:
+                      v13_src = v13_src.rstrip("\n") + "\n" + block
+                  open(op_h, "w", encoding="utf-8").write(v13_src)
+                  total += 1
+                  print("  compat: cam_defs_op.h +%d macros / +3 structs" % len(macros))
           print("=== fixup: 4.14 compat sites patched: %d ===" % total)
 
           # neutralise any Kconfig `source` whose target file is absent
