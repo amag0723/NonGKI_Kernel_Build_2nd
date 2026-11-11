@@ -841,6 +841,27 @@ jobs:
                   print("=== fixup: v21 CONFIG_KALLSYMS_BASE_RELATIVE already disabled ===")
           else:
               print("=== fixup: v21 defconfig not found at %s ===" % _cfg21)
+          # ---- v23: enable KSU manual (inline) hooks ----
+          # The repo's SUSFS-inline-hook step patches kernel/sys.c (prctl),
+          # fs/exec.c, fs/stat.c, fs/open.c, fs/read_write.c, fs/namei.c,
+          # drivers/input/input.c, security/selinux/hooks.c, kernel/reboot.c
+          # with ksu_handle_* call sites that are ALL wrapped in
+          # "#ifdef CONFIG_KSU_MANUAL_HOOK".  The setup script only appends
+          # CONFIG_KSU_MANUAL_HOOK=y for rsuntk/Next forks, so with the plain
+          # sukisu fork the call sites are compiled out: the KSU driver
+          # exists but is inert (manager probe "内核上未检测到 SukiSU 驱动
+          # 程序", no su redirect, no root).  Append the switch explicitly.
+          _cfg23 = _cfg21
+          if os.path.isfile(_cfg23):
+              _c23 = open(_cfg23, encoding="utf-8", errors="replace").read()
+              if "CONFIG_KSU_MANUAL_HOOK" not in _c23:
+                  _c23 = _c23.rstrip("\n") + "\nCONFIG_KSU_MANUAL_HOOK=y\n"
+                  open(_cfg23, "w", encoding="utf-8").write(_c23)
+                  print("=== fixup: v23 CONFIG_KSU_MANUAL_HOOK=y appended to defconfig ===")
+              else:
+                  print("=== fixup: v23 CONFIG_KSU_MANUAL_HOOK already present ===")
+          else:
+              print("=== fixup: v23 defconfig not found at %s ===" % _cfg23)
           _ks21 = os.path.join(root, "scripts", "kallsyms.c")
           if os.path.isfile(_ks21):
               _kt21 = open(_ks21, encoding="utf-8", errors="replace").read()
