@@ -700,6 +700,41 @@ jobs:
                   print("=== fixup: v18 LDFLAGS_vmlinux += -z max-page-size=0x1000 ===")
               else:
                   print("=== fixup: v18 max-page-size already present ===")
+          # ---- v19: link vmlinux with GNU ld (bfd) instead of LLD ----
+          # R_AARCH64_LDST32_ABS_LO12_NC "improper alignment" is an LLD 13-15
+          # bug: the `_NC` reloc means "no check", yet those LLD versions still
+          # enforced 4-byte alignment (the relaxation only landed in LLD 16+,
+          # which is not in the runner's default apt repos, so v18's
+          # `apt-get install lld` only fetched lld-14 and could not fix it).
+          # For a 4.14 (non-GKI) kernel the robust path is GNU ld/bfd -- exactly
+          # what 4.14 was designed to link with, and which does NOT perform this
+          # bogus alignment check.  binutils-aarch64-linux-gnu is already
+          # installed (apt step), providing aarch64-linux-gnu-ld[.bfd].
+          # We overwrite clang-custom/bin/ld.lld so `LD=ld.lld` (EXTRA_CMDS)
+          # transparently invokes GNU ld; the kernel Makefile detects "GNU" via
+          # `$(LD) -v` and uses the standard bfd flag set.
+          import glob as _g19
+          _gnu_ld = None
+          for _cand in ("/usr/bin/aarch64-linux-gnu-ld.bfd",
+                        "/usr/bin/aarch64-linux-gnu-ld"):
+              if os.path.isfile(_cand):
+                  _gnu_ld = _cand
+                  break
+          if _gnu_ld is None:
+              _hits = _g19.glob("/usr/bin/aarch64-linux-gnu-ld*")
+              if _hits:
+                  _gnu_ld = sorted(_hits)[0]
+          if _gnu_ld:
+              _lld_t = os.path.join(_cc_bin, "ld.lld")
+              try:
+                  if os.path.isfile(_lld_t) and not os.path.exists(_lld_t + ".orig"):
+                      _shutil.copy2(_lld_t, _lld_t + ".orig")
+                  _shutil.copy2(_gnu_ld, _lld_t)
+                  print("=== fixup: v19 ld.lld -> GNU ld (%s) ===" % _gnu_ld)
+              except Exception as _e:
+                  print("=== fixup: v19 copy failed:", _e)
+          else:
+              print("=== fixup: v19 GNU ld not found; link may still fail ===")
           # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
           # (kept for safety: if OP_8150_ADAPT is ever still defined on some
           # path, the reduced cam_defs_op.h is back-filled with the missing
