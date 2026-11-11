@@ -479,7 +479,68 @@ jobs:
                       open(cam_defs, "w", encoding="utf-8").writelines(lines)
                       total += 1
                       print("  compat: cam_defs.h stock definition guarded")
+          # ---- v14: neutralise -DOP_8150_ADAPT so the FULL (complete) UAPI
+          # headers are used.  OplusKernelEnvConfig.mk adds -DOP_8150_ADAPT
+          # only when TARGET_PRODUCT=msmnile; under it every <media/cam_*.h>
+          # switches, via `#if defined(OP_8150_ADAPT)`, to a STRICT SUBSET
+          # *_op.h (cam_defs_op.h, cam_isp_op.h, cam_sensor_op.h, ...) that
+          # drops structs/macros the stock camera drivers still reference
+          # (v12 CAM_DUMP_REQ, v13 struct cam_isp_sensor_dimension, and more).
+          # The OnePlus 7 Pro (guacamole) is an sm8150 device whose real OOS12
+          # kernel is built with a product-specific TARGET_PRODUCT, NOT raw
+          # msmnile, so OP_8150_ADAPT is OFF and the full headers are the
+          # correct, complete set.  The CI build script blindly sets msmnile
+          # for sm8150, wrongly triggering the reduced headers.  Removing only
+          # the -DOP_8150_ADAPT additions (TARGET_PRODUCT + every other vendor
+          # flag stay intact) makes the build use the complete headers without
+          # touching device selection.  Idempotent; regex tolerates the
+          # inconsistent += spacing in the makefile.
+          import re as _re
+          mkcfg = os.path.join(root, "OplusKernelEnvConfig.mk")
+          if os.path.isfile(mkcfg):
+              src = open(mkcfg, encoding="utf-8", errors="replace").read()
+              if "SUKISU_OP8150_ADAPT_DISABLED" not in src:
+                  _pat = _re.compile(
+                      r"(KBUILD_CFLAGS|KBUILD_CPPFLAGS|CFLAGS_KERNEL|"
+                      r"CFLAGS_MODULE)\s*[+]=\s*-DOP_8150_ADAPT")
+                  new_src, reps = _pat.subn(
+                      lambda m: "# [SUKISU_OP8150_ADAPT_DISABLED] " + m.group(0),
+                      src)
+                  if reps:
+                      open(mkcfg, "w", encoding="utf-8").write(new_src)
+                  print("=== fixup: OP_8150_ADAPT -D removed from "
+                        "OplusKernelEnvConfig.mk: %d ===" % reps)
+              else:
+                  print("=== fixup: OP_8150_ADAPT already disabled ===")
+          # Safety net: any other Makefile/Kbuild/*.mk that injects
+          # -DOP_8150_ADAPT (in case the CI build script adds it elsewhere)
+          # is neutralised the same way, so the reduced *_op.h headers can
+          # never be selected regardless of where the macro originates.
+          _total = 0
+          for _dir, _sub, _files in os.walk(root):
+              for _fn in _files:
+                  if _fn not in ("Makefile", "Kbuild") and not _fn.endswith(".mk"):
+                      continue
+                  _p = os.path.join(_dir, _fn)
+                  try:
+                      _s = open(_p, encoding="utf-8", errors="replace").read()
+                  except OSError:
+                      continue
+                  if "-DOP_8150_ADAPT" not in _s:
+                      continue
+                  _ns, _r = _pat.subn(
+                      lambda m: "# [SUKISU_OP8150_ADAPT_DISABLED] " + m.group(0),
+                      _s)
+                  if _r:
+                      open(_p, "w", encoding="utf-8").write(_ns)
+                      _total += _r
+          if _total:
+              print("=== fixup: OP_8150_ADAPT -D removed from other "
+                    "Makefiles/Kbuild: %d ===" % _total)
           # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
+          # (kept for safety: if OP_8150_ADAPT is ever still defined on some
+          # path, the reduced cam_defs_op.h is back-filled with the missing
+          # symbols; otherwise this block is a harmless no-op.)
           # OplusKernelEnvConfig.mk adds -DOP_8150_ADAPT when
           # TARGET_PRODUCT=msmnile (and -DVENDOR_EDIT unconditionally).
           # <media/cam_defs.h> then expands to cam_defs_op.h ONLY, which is a
