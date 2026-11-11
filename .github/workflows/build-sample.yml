@@ -304,6 +304,47 @@ jobs:
                       open(ksu_hdr, "w", encoding="utf-8").writelines(lines)
               print("=== fixup: static_call.h guarded by kernel version: %d ===" % n)
 
+          # SukiSU-Ultra builtin (v4.3.0-r2) merges extension/cpu_spoof.c
+          # into ksu_main.c.  It pulls in <vdso/datapage.h> and
+          # <vdso/clocksource.h> plus the whole generic vDSO time family
+          # (struct vdso_data, enum vdso_clock_mode,
+          # VDSO_CLOCKMODE_ARCHTIMER, CS_HRES_COARSE, ...).  Those exist
+          # only on 5.10+; 4.14 arm64 has just the legacy
+          # asm/vdso_datapage.h with a different layout
+          # (v9 failure: extension/cpu_spoof.c:29 fatal error).
+          # CPU identity spoofing is NOT in our feature set, and the whole
+          # extension exports exactly one symbol, so on <5.10 we keep the
+          # symbol as an -EOPNOTSUPP stub.  Every other extension, the
+          # root path and the whole SuSFS hiding path stay compiled exactly
+          # as upstream ships them.
+          cpu_spoof = os.path.join(root, "drivers", "kernelsu", "extension", "cpu_spoof.c")
+          if os.path.isfile(cpu_spoof):
+              src = open(cpu_spoof, encoding="utf-8", errors="replace").read()
+              n = 0
+              if ("SUKISU_414_CPU_SPOOF_STUB" not in src and
+                      "#include <vdso/datapage.h>" in src):
+                  guard = (
+                      "// [SUKISU_414_CPU_SPOOF_STUB] generic vDSO API exists only on 5.10+\n"
+                      "#include <linux/version.h>\n"
+                      "#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 10, 0)\n"
+                      "#include <linux/kernel.h>\n"
+                      "#include <linux/types.h>\n"
+                      "#include <linux/errno.h>\n"
+                      "#include <linux/uaccess.h>\n"
+                      "int ksu_extension_cpu_spoof_io(u32 id, void __user *raw)\n"
+                      "{\n"
+                      "    (void)id;\n"
+                      "    (void)raw;\n"
+                      "    return -EOPNOTSUPP;\n"
+                      "}\n"
+                      "#else\n"
+                  )
+                  open(cpu_spoof, "w", encoding="utf-8").write(
+                      guard + src.rstrip("\n") +
+                      "\n#endif /* SUKISU_414_CPU_SPOOF_STUB */\n")
+                  n = 1
+              print("=== fixup: cpu_spoof.c stubbed for <5.10: %d ===" % n)
+
           # neutralise any Kconfig `source` whose target file is absent
           disabled = []
           for dirpath, dirs, files in os.walk(root):
