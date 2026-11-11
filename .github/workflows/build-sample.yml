@@ -772,6 +772,39 @@ jobs:
                   print('=== fixup: v19 vdso Makefile NOT FOUND at', _vmk)
           else:
               print('=== fixup: v19 GNU ld not found; link will fail ===')
+          # ---- v20: align KSU __read_mostly bools ----
+          # run 43055363609 proved the v17/v18 "linker bug" was really
+          # SukiSU's own `bool ksu_su_compat_enabled __read_mostly` (align 1,
+          # .data..read_mostly) referenced via 32-bit loads: both lld
+          # ("improper alignment for R_AARCH64_LDST32_ABS_LO12_NC") and GNU
+          # bfd ("relocation truncated to fit") correctly reject that.
+          # Fix at the definition: force 8-byte alignment on every bool
+          # declared __read_mostly under drivers/kernelsu. Idempotent.
+          import re as _re20
+          import glob as _g20
+          _ksu_root = os.path.join(root, 'drivers', 'kernelsu')
+          _v20_files = 0
+          if os.path.isdir(_ksu_root):
+              for _p20 in (_g20.glob(os.path.join(_ksu_root, '**', '*.c'), recursive=True) +
+                           _g20.glob(os.path.join(_ksu_root, '**', '*.h'), recursive=True)):
+                  try:
+                      _s20 = open(_p20, encoding='utf-8', errors='replace').read()
+                  except Exception:
+                      continue
+                  if '__read_mostly' not in _s20:
+                      continue
+                  _o20 = _s20
+                  _s20 = _re20.sub(
+                      r'\bbool\s+(\w+)\s+(__read_mostly)(?![^\n;]*__aligned)',
+                      r'bool \1 \2 __aligned(8)', _s20)
+                  if _s20 != _o20:
+                      try:
+                          open(_p20, 'w', encoding='utf-8', errors='replace').write(_s20)
+                          _v20_files += 1
+                          print('=== fixup: v20 aligned bool in %s ===' % os.path.basename(_p20))
+                      except Exception as _e20:
+                          print('=== fixup: v20 write failed %s: %s ===' % (_p20, _e20))
+          print('=== fixup: v20 ksu bool alignment, files patched: %d ===' % _v20_files)
           # ---- v13: restore the UAPI symbols that OP_8150_ADAPT drops ----
           # (kept for safety: if OP_8150_ADAPT is ever still defined on some
           # path, the reduced cam_defs_op.h is back-filled with the missing
