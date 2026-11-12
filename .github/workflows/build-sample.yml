@@ -1042,6 +1042,62 @@ jobs:
                   print("=== fixup: v24 selinux.c legacy prctl bridge appended ===")
           else:
               print("=== fixup: v24 selinux.c not found (candidates checked) ===")
+          # ---- v26: deferred late-init on the reboot-magic fd-install path ----
+          # v24's prctl bridge is a dead trigger: the 4.3.0-r2 manager NEVER
+          # calls prctl(0xDEADBEEF, 2) -- manager_ksu.cc get_info() only does
+          # fd-scan + KSU_IOCTL_GET_INFO, and the fd arrives via
+          # reboot(0xDEADBEEF /* KSU_INSTALL_MAGIC1 */, KSU_INSTALL_MAGIC2).
+          # Round-6 logcat proof: "KernelSU driver install syscall was blocked
+          # by seccomp" -- the manager app spawned WITHOUT disable_seccomp()
+          # because susfs_zygote_sid was still 0 (no ksud on a temporary boot),
+          # so handle_zygote_setresuid() never crowned it, and its embedded
+          # ksud's reboot() was trapped by the app seccomp filter -> the
+          # "device abnormal" popup.  Fix: run the same deferred late-init the
+          # v24 bridge wanted, but on the FIRST reboot-magic contact, which
+          # any ksud/manager performs before its first ioctl.  After that the
+          # setresuid hook can crown the manager for apps spawned later.
+          _sc26 = None
+          for _cand in (os.path.join(root, "KernelSU", "kernel", "supercall", "supercall.c"),
+                        os.path.join(root, "drivers", "kernelsu", "supercall", "supercall.c")):
+              if os.path.isfile(_cand):
+                  _sc26 = _cand
+                  break
+          if _sc26:
+              _sc = open(_sc26, encoding="utf-8", errors="replace").read()
+              if "WB-V26" in _sc:
+                  print("=== fixup: v26 supercall.c late-init already present ===")
+              else:
+                  _a26 = ("int ksu_supercall_reboot_handler(void __user **arg)\n"
+                          "{\n"
+                          "    struct ksu_install_fd_tw *tw;")
+                  _b26 = ("int ksu_supercall_reboot_handler(void __user **arg)\n"
+                          "{\n"
+                          "#ifdef CONFIG_KSU_SUSFS\n"
+                          "    /* WB-V26: deferred late-init on first reboot-magic contact. */\n"
+                          "    static atomic_t v26_late_init = ATOMIC_INIT(0);\n"
+                          "    if (!atomic_xchg(&v26_late_init, 1)) {\n"
+                          "        extern u32 susfs_zygote_sid;\n"
+                          "        extern void susfs_set_batch_sid(void);\n"
+                          "        extern int ksu_observer_init(void);\n"
+                          "        extern void track_throne(bool prune_only);\n"
+                          "        if (!susfs_zygote_sid) {\n"
+                          "            susfs_set_batch_sid();\n"
+                          "            pr_info(\"WB-V26: batch sids resolved via reboot handler\\n\");\n"
+                          "        }\n"
+                          "        ksu_observer_init();\n"
+                          "        track_throne(false);\n"
+                          "        pr_info(\"WB-V26: late init (observer + throne) done\\n\");\n"
+                          "    }\n"
+                          "#endif\n"
+                          "    struct ksu_install_fd_tw *tw;")
+                  if _a26 in _sc:
+                      _sc = _sc.replace(_a26, _b26, 1)
+                      open(_sc26, "w", encoding="utf-8").write(_sc)
+                      print("=== fixup: v26 supercall.c reboot-handler late-init added ===")
+                  else:
+                      print("=== fixup: v26 supercall.c anchor not found; skipped ===")
+          else:
+              print("=== fixup: v26 supercall.c not found (candidates checked) ===")
           _ks21 = os.path.join(root, "scripts", "kallsyms.c")
           if os.path.isfile(_ks21):
               _kt21 = open(_ks21, encoding="utf-8", errors="replace").read()
