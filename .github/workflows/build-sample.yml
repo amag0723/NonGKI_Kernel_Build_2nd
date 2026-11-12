@@ -842,15 +842,13 @@ jobs:
           else:
               print("=== fixup: v21 defconfig not found at %s ===" % _cfg21)
           # ---- v23: enable KSU manual (inline) hooks ----
-          # The repo's SUSFS-inline-hook step patches kernel/sys.c (prctl),
-          # fs/exec.c, fs/stat.c, fs/open.c, fs/read_write.c, fs/namei.c,
-          # drivers/input/input.c, security/selinux/hooks.c, kernel/reboot.c
-          # with ksu_handle_* call sites that are ALL wrapped in
-          # "#ifdef CONFIG_KSU_MANUAL_HOOK".  The setup script only appends
-          # CONFIG_KSU_MANUAL_HOOK=y for rsuntk/Next forks, so with the plain
-          # sukisu fork the call sites are compiled out: the KSU driver
-          # exists but is inert (manager probe "内核上未检测到 SukiSU 驱动
-          # 程序", no su redirect, no root).  Append the switch explicitly.
+          # NOTE (v24 correction): the original theory below was DISPROVEN.
+          # The repo's SUSFS-inline-hook script (Patches/susfs_inline_hook_patches.sh)
+          # gates its call sites on CONFIG_KSU / CONFIG_KSU_SUSFS (both =y),
+          # NOT CONFIG_KSU_MANUAL_HOOK; all 11 files patch successfully.  The
+          # builtin branch Kconfig has no KSU_MANUAL_HOOK symbol at all, so
+          # kconfig silently drops this defconfig line (harmless no-op).
+          # The real root cause + fix live in the v24 block below.
           _cfg23 = _cfg21
           if os.path.isfile(_cfg23):
               _c23 = open(_cfg23, encoding="utf-8", errors="replace").read()
@@ -862,6 +860,144 @@ jobs:
                   print("=== fixup: v23 CONFIG_KSU_MANUAL_HOOK already present ===")
           else:
               print("=== fixup: v23 defconfig not found at %s ===" % _cfg23)
+          # ---- v24: legacy prctl supercall bridge + diagnostic build ----
+          # ROOT CAUSE of "manager says driver not detected" on userspace-less
+          # temporary boots (fastboot boot of kernel-only image, stock ramdisk).
+          # ksud never runs in that scenario, so EVENT_POST_FS_DATA never fires.
+          # on_post_fs_data() (runtime/ksud.c) is the ONLY caller of
+          # ksu_observer_init() (fsnotify watch on /data/system), therefore:
+          #   1. packages.list is never watched -> track_throne() never runs ->
+          #      the manager is never crowned;
+          #   2. susfs_set_batch_sid() is only reached from the sepolicy-apply
+          #      path (selinux/rules.c), which also needs ksud, so
+          #      susfs_zygote_sid stays 0 forever;
+          #   3. handle_zygote_setresuid() (hook/lsm_hook.c) installs the
+          #      [ksu_driver] fd only when ksu_is_manager_appid_valid() &&
+          #      is_uid_manager(ruid) && susfs_is_sid_equal(zygote) -> never;
+          #   4. the manager falls back to prctl(0xDEADBEEF, 2, ...) but the
+          #      builtin fork has NO prctl call site at all -> probe dead too.
+          # Net effect: "内核上未检测到 SukiSU 驱动程序" although driver, hooks
+          # and the reboot supercall channel are all alive.
+          # v24 fix: wire the manager's own legacy probe to the driver AND run
+          # the deferred late-init (SIDs + crown + fd install) on first probe.
+          # CONFIG_KSU_DEBUG=y additionally makes allow_shell=true so
+          # `ksud debug su` grants adb shell a root shell on a temporary boot,
+          # unlocking dmesg/pstore for the crash/freeze investigation.
+          _cfg24 = _cfg21
+          if os.path.isfile(_cfg24):
+              _c24 = open(_cfg24, encoding="utf-8", errors="replace").read()
+              if "CONFIG_KSU_DEBUG=y" not in _c24:
+                  _c24 = _c24.rstrip("\n") + "\nCONFIG_KSU_DEBUG=y\n"
+                  open(_cfg24, "w", encoding="utf-8").write(_c24)
+                  print("=== fixup: v24 CONFIG_KSU_DEBUG=y appended (diagnostic build) ===")
+              else:
+                  print("=== fixup: v24 CONFIG_KSU_DEBUG already present ===")
+          else:
+              print("=== fixup: v24 defconfig not found at %s ===" % _cfg24)
+          _v24c = [
+              "",
+              "/* WB-V24: legacy prctl supercall bridge for the SukiSU manager.",
+              " *",
+              " * On a userspace-less temporary boot ksud never runs, so",
+              " * on_post_fs_data() never fires: the observer never watches",
+              " * /data/system, track_throne() never crowns the manager, and",
+              " * susfs_set_batch_sid() is never called, so susfs_zygote_sid stays 0",
+              " * and handle_zygote_setresuid() never installs the [ksu_driver] fd.",
+              " * The manager then probes via prctl(0xDEADBEEF, 2, &version, &flags,",
+              " * &result); without a call site that probe is dead too.  This",
+              " * bridge answers that probe and performs the deferred late-init on",
+              " * the first contact (SELinux policy is guaranteed loaded by then).",
+              " */",
+              "#ifdef CONFIG_KSU",
+              "int ksu_handle_legacy_prctl(int option, unsigned long a2,",
+              "\t\t\t\t    unsigned long a3, unsigned long a4,",
+              "\t\t\t\t    unsigned long a5)",
+              "{",
+              "\tstatic atomic_t v24_late_init = ATOMIC_INIT(0);",
+              "",
+              "\tif (option != (int)0xDEADBEEF)",
+              "\t\treturn 0;",
+              "",
+              "\tif (!atomic_xchg(&v24_late_init, 1)) {",
+              "#ifdef CONFIG_KSU_SUSFS",
+              "\t\tif (!susfs_zygote_sid) {",
+              "\t\t\tsusfs_set_batch_sid();",
+              "\t\t\tpr_info(\"WB-V24: batch sids resolved via prctl bridge\\n\");",
+              "\t\t}",
+              "#endif",
+              "\t\tksu_observer_init();",
+              "\t\ttrack_throne(false);",
+              "\t\tpr_info(\"WB-V24: late init (observer + throne) done\\n\");",
+              "\t}",
+              "",
+              "\tif (ksu_is_manager_appid_valid() &&",
+              "\t    is_uid_manager(current_uid().val)) {",
+              "\t\tpr_info(\"WB-V24: install fd for manager (prctl bridge)\\n\");",
+              "\t\tksu_install_fd();",
+              "\t}",
+              "",
+              "\tif (a2 == 2) {",
+              "\t\tint version = KSU_VERSION;",
+              "\t\tint flags = 0;",
+              "\t\tint result = 0;",
+              "",
+              "\t\tif (a3)",
+              "\t\t\tcopy_to_user((void __user *)a3, &version, sizeof(version));",
+              "\t\tif (a4)",
+              "\t\t\tcopy_to_user((void __user *)a4, &flags, sizeof(flags));",
+              "\t\tif (a5)",
+              "\t\t\tcopy_to_user((void __user *)a5, &result, sizeof(result));",
+              "\t}",
+              "\treturn 0;",
+              "}",
+              "#endif /* CONFIG_KSU */",
+              "",
+          ]
+          _sys24 = os.path.join(root, "kernel", "sys.c")
+          if os.path.isfile(_sys24):
+              _st = open(_sys24, encoding="utf-8", errors="replace").read()
+              if "WB-V24" in _st:
+                  print("=== fixup: v24 kernel/sys.c already patched ===")
+              else:
+                  _i24 = _st.find("SYSCALL_DEFINE5(prctl")
+                  _j24 = _st.find("struct task_struct *me = current;", _i24)
+                  if _i24 >= 0 and _j24 >= 0 and _j24 - _i24 < 400:
+                      _e24 = _j24 + len("struct task_struct *me = current;")
+                      _h24 = [
+                          "",
+                          "\t/* WB-V24: SukiSU legacy prctl supercall bridge. */",
+                          "#ifdef CONFIG_KSU",
+                          "\tif (unlikely(option == (int)0xDEADBEEF)) {",
+                          "\t\textern int ksu_handle_legacy_prctl(int option,",
+                          "\t\t\t\t\t\t  unsigned long a2, unsigned long a3,",
+                          "\t\t\t\t\t\t  unsigned long a4, unsigned long a5);",
+                          "\t\tksu_handle_legacy_prctl(option, arg2, arg3, arg4, arg5);",
+                          "\t}",
+                          "#endif",
+                      ]
+                      _st = _st[:_e24] + "\n".join(_h24) + _st[_e24:]
+                      open(_sys24, "w", encoding="utf-8").write(_st)
+                      print("=== fixup: v24 kernel/sys.c prctl bridge call site added ===")
+                  else:
+                      print("=== fixup: v24 kernel/sys.c anchors not found (i=%d j=%d) ===" % (_i24, _j24))
+          else:
+              print("=== fixup: v24 kernel/sys.c not found ===")
+          _sel24 = None
+          for _cand in (os.path.join(root, "KernelSU", "kernel", "selinux", "selinux.c"),
+                        os.path.join(root, "drivers", "kernelsu", "selinux", "selinux.c")):
+              if os.path.isfile(_cand):
+                  _sel24 = _cand
+                  break
+          if _sel24:
+              _sl = open(_sel24, encoding="utf-8", errors="replace").read()
+              if "WB-V24" in _sl:
+                  print("=== fixup: v24 selinux.c bridge already present ===")
+              else:
+                  _sl = _sl + "\n".join(_v24c) + "\n"
+                  open(_sel24, "w", encoding="utf-8").write(_sl)
+                  print("=== fixup: v24 selinux.c legacy prctl bridge appended ===")
+          else:
+              print("=== fixup: v24 selinux.c not found (candidates checked) ===")
           _ks21 = os.path.join(root, "scripts", "kallsyms.c")
           if os.path.isfile(_ks21):
               _kt21 = open(_ks21, encoding="utf-8", errors="replace").read()
