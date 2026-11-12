@@ -1185,6 +1185,24 @@ jobs:
                   print("=== fixup: v28 sys.c already present ===")
               else:
                   _chg28 = False
+                  # v29 fix: the susfs inline-hook script's own extern
+                  # declaration lives at ~line 623 of sys.c, AFTER our call
+                  # sites at 495/572 -> implicit-declaration under -Werror.
+                  # Put an identical extern before the first SYSCALL_DEFINE
+                  # so every call site (ours and the script's) sees it.
+                  if "extern int ksu_handle_setresuid" not in _sc28.split("SYSCALL_DEFINE")[0]:
+                      _k28 = _sc28.find("SYSCALL_DEFINE")
+                      if _k28 > 0:
+                          _ext28 = ("#ifdef CONFIG_KSU_SUSFS\n"
+                                    "extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);\n"
+                                    "#endif\n\n")
+                          _sc28 = _sc28[:_k28] + _ext28 + _sc28[_k28:]
+                          _chg28 = True
+                          print("=== fixup: v29 sys.c setresuid extern added before first SYSCALL_DEFINE ===")
+                      else:
+                          print("=== fixup: v29 sys.c no SYSCALL_DEFINE anchor; extern skipped ===")
+                  else:
+                      print("=== fixup: v29 sys.c setresuid extern already ahead of call sites ===")
                   _call28 = ("#ifdef CONFIG_KSU_SUSFS\n"
                              "    if (ksu_handle_setresuid(R28, E28, S28)) {\n"
                              "        pr_info(\"Something wrong with ksu_handle_setresuid()\\n\");\n"
