@@ -1249,7 +1249,7 @@ jobs:
                       if _i28d >= 0:
                           _dbg28 = ("\n"
                                     "    { static atomic_t v28_seen = ATOMIC_INIT(0);\n"
-                                    "      if (atomic_read(&v28_seen) < 4) { atomic_inc(&v28_seen);\n"
+                                    "      if (atomic_read(&v28_seen) < 16) { atomic_inc(&v28_seen);\n"
                                     "        pr_info(\"WB-V28: setresuid hook fired cur=%d ruid=%d\\n\", current_uid().val, ruid); } }\n")
                           _ins28d = _i28d + len(_sig28d)
                           _lh28c = _lh28c[:_ins28d] + _dbg28 + _lh28c[_ins28d:]
@@ -1261,6 +1261,46 @@ jobs:
                   print("=== fixup: v28 lsm_hook.c not found ===")
           else:
               print("=== fixup: v28 kernel/sys.c not found ===")
+          # ---- v30: probe the fallback crowning branch ----
+          # Round-2 of v29: the hook is alive (WB-V28 fired 4x from init at
+          # 5.97s) but the v28 counter saturated before zygote spawned any
+          # app, so we are blind to whether the manager uid (1010094) ever
+          # reaches the hook, and "install fd" never printed.  Add a probe
+          # inside the fallback branch: once ksu_is_manager_appid_valid()
+          # becomes true, log the first 3 app spawns (ruid + is_uid_manager
+          # verdict) and ALWAYS log a manager-uid hit -- that pinpoints
+          # whether the manager spawn arrives and, if it does, why the
+          # crowning check passes/fails.
+          _lh30 = None
+          for _cand30 in (os.path.join(root, "KernelSU", "kernel", "hook", "lsm_hook.c"),
+                          os.path.join(root, "drivers", "kernelsu", "kernel", "hook", "lsm_hook.c"),
+                          os.path.join(root, "drivers", "kernelsu", "kernel", "lsm_hook.c")):
+              if os.path.isfile(_cand30):
+                  _lh30 = _cand30
+                  break
+          if _lh30:
+              _lh30c = open(_lh30, encoding="utf-8", errors="replace").read()
+              if "WB-V30" in _lh30c:
+                  print("=== fixup: v30 probe already present ===")
+              else:
+                  _a30 = "        if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {"
+                  _b30 = ("        if (likely(ksu_is_manager_appid_valid())) {\n"
+                          "            static atomic_t v30_probe = ATOMIC_INIT(0);\n"
+                          "            int v30_m = is_uid_manager(ruid);\n"
+                          "            if (v30_m || atomic_read(&v30_probe) < 3) {\n"
+                          "                if (!v30_m) atomic_inc(&v30_probe);\n"
+                          "                pr_info(\"WB-V30: fallback ruid=%d mgr=%d\\n\", ruid, v30_m);\n"
+                          "            }\n"
+                          "        }\n"
+                          "        if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {")
+                  if _a30 in _lh30c:
+                      _lh30c = _lh30c.replace(_a30, _b30, 1)
+                      open(_lh30, "w", encoding="utf-8").write(_lh30c)
+                      print("=== fixup: v30 fallback probe added ===")
+                  else:
+                      print("=== fixup: v30 probe anchor not found ===")
+          else:
+              print("=== fixup: v30 lsm_hook.c not found ===")
           _ks21 = os.path.join(root, "scripts", "kallsyms.c")
           if os.path.isfile(_ks21):
               _kt21 = open(_ks21, encoding="utf-8", errors="replace").read()
