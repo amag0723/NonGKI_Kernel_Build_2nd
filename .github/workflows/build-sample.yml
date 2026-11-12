@@ -347,6 +347,48 @@ jobs:
                   n = 1
               print("=== fixup: cpu_spoof.c stubbed for <5.10: %d ===" % n)
 
+          # ---- v25: pin the SukiSU driver to the boot-verified commit ----
+          # Device boot matrix: v22 (driver @ 850149efa4) boots 2/2;
+          # v23/v24 (driver @ 6076949f26 "selinux: fix reset_avc_cache() on
+          # < 5.10 kernels", landed 2026-11-11T17:35Z, 18 minutes AFTER the
+          # v22 kernel binary was produced) fail to boot 0/4 with identical
+          # config/toolchain/size.  setup.sh clones builtin HEAD unpinned, so
+          # every build was a moving target.  Pin the driver back to the last
+          # commit verified to boot (850149efa429d9076696c9ccef2336302d50d955).
+          # The SUSFS patches repo is pinned separately inside the patch-susfs
+          # composite (bfb739425e).  ORDER MATTERS: this checkout runs FIRST,
+          # before ANY PYSELFHEAL driver-tree modification (v11 compat shims,
+          # v20 __aligned(8), v24 selinux.c bridge) so every fix re-applies on
+          # the pristine pinned tree.  v25a lesson: placing this block after
+          # the v11 compat fixes made `git checkout` silently revert the
+          # rules.c pol->latest_granting fix and the build died on it.
+          import subprocess as _sp
+          _KSU_PIN = "850149efa429d9076696c9ccef2336302d50d955"
+          _ksu_dir = os.path.join(root, "KernelSU")
+          if os.path.isdir(_ksu_dir):
+              def _git25(*_a):
+                  return _sp.run(["git"] + list(_a), cwd=_ksu_dir,
+                                 capture_output=True, text=True)
+              _h25 = _git25("rev-parse", "HEAD")
+              if _h25.returncode != 0:
+                  print("=== fixup: v25 KernelSU dir not a git repo: %s ===" % _h25.stderr.strip()[:100])
+              elif _h25.stdout.strip() == _KSU_PIN:
+                  print("=== fixup: v25 driver already pinned at %s ===" % _KSU_PIN[:10])
+              else:
+                  _was25 = _h25.stdout.strip()[:10]
+                  _c25 = _git25("checkout", "--detach", _KSU_PIN)
+                  if _c25.returncode != 0:
+                      _f25 = _git25("fetch", "--depth=1", "origin", _KSU_PIN)
+                      if _f25.returncode != 0:
+                          print("=== fixup: v25 driver fetch failed: %s ===" % _f25.stderr.strip()[:150])
+                      else:
+                          _c25 = _git25("checkout", "--detach", "FETCH_HEAD")
+                  if _c25.returncode == 0:
+                      print("=== fixup: v25 driver pinned to %s (was %s) ===" % (_KSU_PIN[:10], _was25))
+                  else:
+                      print("=== fixup: v25 driver checkout failed: %s ===" % _c25.stderr.strip()[:150])
+          else:
+              print("=== fixup: v25 KernelSU dir not found at %s ===" % _ksu_dir)
           # ---- v11: route newly-added SukiSU code through its own 4.14 shims ----
           # v10 (run 42995708433) got past cpu_spoof and exposed 6 errors in
           # the single ksu_main.o translation unit, plus 1 in a stock OnePlus
@@ -885,44 +927,6 @@ jobs:
           # CONFIG_KSU_DEBUG=y additionally makes allow_shell=true so
           # `ksud debug su` grants adb shell a root shell on a temporary boot,
           # unlocking dmesg/pstore for the crash/freeze investigation.
-          # ---- v25: pin the SukiSU driver to the boot-verified commit ----
-          # Device boot matrix: v22 (driver @ 850149efa4) boots 2/2;
-          # v23/v24 (driver @ 6076949f26 "selinux: fix reset_avc_cache() on
-          # < 5.10 kernels", landed 2026-11-11T17:35Z, 18 minutes AFTER the
-          # v22 kernel binary was produced) fail to boot 0/4 with identical
-          # config/toolchain/size.  setup.sh clones builtin HEAD unpinned, so
-          # every build was a moving target.  Pin the driver back to the last
-          # commit verified to boot (850149efa429d9076696c9ccef2336302d50d955).
-          # The SUSFS patches repo is pinned separately inside the patch-susfs
-          # composite (bfb739425e).  ORDER MATTERS: this checkout runs BEFORE
-          # the v24 bridge is appended to KernelSU/kernel/selinux/selinux.c.
-          import subprocess as _sp
-          _KSU_PIN = "850149efa429d9076696c9ccef2336302d50d955"
-          _ksu_dir = os.path.join(root, "KernelSU")
-          if os.path.isdir(_ksu_dir):
-              def _git25(*_a):
-                  return _sp.run(["git"] + list(_a), cwd=_ksu_dir,
-                                 capture_output=True, text=True)
-              _h25 = _git25("rev-parse", "HEAD")
-              if _h25.returncode != 0:
-                  print("=== fixup: v25 KernelSU dir not a git repo: %s ===" % _h25.stderr.strip()[:100])
-              elif _h25.stdout.strip() == _KSU_PIN:
-                  print("=== fixup: v25 driver already pinned at %s ===" % _KSU_PIN[:10])
-              else:
-                  _was25 = _h25.stdout.strip()[:10]
-                  _c25 = _git25("checkout", "--detach", _KSU_PIN)
-                  if _c25.returncode != 0:
-                      _f25 = _git25("fetch", "--depth=1", "origin", _KSU_PIN)
-                      if _f25.returncode != 0:
-                          print("=== fixup: v25 driver fetch failed: %s ===" % _f25.stderr.strip()[:150])
-                      else:
-                          _c25 = _git25("checkout", "--detach", "FETCH_HEAD")
-                  if _c25.returncode == 0:
-                      print("=== fixup: v25 driver pinned to %s (was %s) ===" % (_KSU_PIN[:10], _was25))
-                  else:
-                      print("=== fixup: v25 driver checkout failed: %s ===" % _c25.stderr.strip()[:150])
-          else:
-              print("=== fixup: v25 KernelSU dir not found at %s ===" % _ksu_dir)
           _cfg24 = _cfg21
           if os.path.isfile(_cfg24):
               _c24 = open(_cfg24, encoding="utf-8", errors="replace").read()
