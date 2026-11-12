@@ -3,6 +3,8 @@ name: Build OnePlus 7 Pro (OxygenOS 12) SukiSU-Ultra + SuSFS
 on:
   workflow_call:
   workflow_dispatch:
+  push:
+    branches: [sample]
 
 # ============================================================================
 # GM1910 / guacamole / sm8150 / kernel 4.14.180 (non-GKI) / OxygenOS 12
