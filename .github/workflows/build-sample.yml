@@ -1301,6 +1301,59 @@ jobs:
                       print("=== fixup: v30 probe anchor not found ===")
           else:
               print("=== fixup: v30 lsm_hook.c not found ===")
+          # ---- v31: crown the manager by uid BEFORE any sid logic ----
+          # Round-4 decisive evidence chain:
+          #  - "Crowning manager: uid=10094" at 10.25s proves ksu_set_manager_appid
+          #    ran via the v26 supercall late-init (ksud escape-to-root), so the
+          #    appid IS valid from 10.25s on.
+          #  - Yet the v27 fallback never ran (no "via setresuid fallback" line)
+          #    and the v30 probe stayed silent even for a direct
+          #    setresuid(10094) from a root shell -> susfs_zygote_sid is
+          #    NON-ZERO for the whole boot, so the `if (!susfs_zygote_sid)`
+          #    fallback is dead and the sid_equal checks never match either
+          #    (the temporary-boot environment never marks zygote creds).
+          #  - Fix: hoist a uid-only crowning check above ALL sid logic in
+          #    ksu_handle_setresuid.  The manager appid is authoritative;
+          #    everything else keeps its sid gating untouched.
+          _lh31 = None
+          for _cand31 in (os.path.join(root, "KernelSU", "kernel", "hook", "lsm_hook.c"),
+                          os.path.join(root, "drivers", "kernelsu", "kernel", "hook", "lsm_hook.c"),
+                          os.path.join(root, "drivers", "kernelsu", "kernel", "lsm_hook.c")):
+              if os.path.isfile(_cand31):
+                  _lh31 = _cand31
+                  break
+          if _lh31:
+              _lh31c = open(_lh31, encoding="utf-8", errors="replace").read()
+              if "WB-V31" in _lh31c:
+                  print("=== fixup: v31 uid-only crowning already present ===")
+              else:
+                  _a31 = ("    // We only interest in process spwaned by zygote or zygote_next\n"
+                          "    if (susfs_is_sid_equal(current_cred(), susfs_zygote_sid))\n"
+                          "        return handle_zygote_setresuid(ruid);")
+                  _b31 = ("#ifdef CONFIG_KSU_SUSFS\n"
+                          "    /* WB-V31: crown the manager by uid regardless of sid state.\n"
+                          "     * On a temporary (fastboot boot) the zygote sid mechanism is\n"
+                          "     * never armed, so neither the sid==0 fallback nor the\n"
+                          "     * sid_equal checks can crown the manager.  The manager appid\n"
+                          "     * registered by track_throne is authoritative. */\n"
+                          "    if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {\n"
+                          "        disable_seccomp();\n"
+                          "        pr_info(\"WB-V31: install fd for manager (uid-only): %d\\n\", ruid);\n"
+                          "        ksu_install_fd();\n"
+                          "        return 0;\n"
+                          "    }\n"
+                          "#endif\n"
+                          "    // We only interest in process spwaned by zygote or zygote_next\n"
+                          "    if (susfs_is_sid_equal(current_cred(), susfs_zygote_sid))\n"
+                          "        return handle_zygote_setresuid(ruid);")
+                  if _a31 in _lh31c:
+                      _lh31c = _lh31c.replace(_a31, _b31, 1)
+                      open(_lh31, "w", encoding="utf-8").write(_lh31c)
+                      print("=== fixup: v31 uid-only crowning added ===")
+                  else:
+                      print("=== fixup: v31 crowning anchor not found ===")
+          else:
+              print("=== fixup: v31 lsm_hook.c not found ===")
           _ks21 = os.path.join(root, "scripts", "kallsyms.c")
           if os.path.isfile(_ks21):
               _kt21 = open(_ks21, encoding="utf-8", errors="replace").read()
