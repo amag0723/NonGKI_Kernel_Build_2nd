@@ -1168,6 +1168,81 @@ jobs:
                       print("=== fixup: v27 lsm_hook.c anchor not found; skipped ===")
           else:
               print("=== fixup: v27 lsm_hook.c not found (candidates checked) ===")
+          # ---- v28: make the setresuid wiring actually reachable + debug ----
+          # Round-12 decisive proof: a direct setresuid(10094,10094,10094)
+          # syscall from a root (uid 0) shell produced ZERO kernel logs --
+          # the call site the susfs inline-hook script inserts into
+          # kernel/sys.c is dead (its shell sed '0,/pat/b; /pat/i\...' skips
+          # the first pattern match, so the hook call never lands on the
+          # executed path of SYSCALL_DEFINE3(setresuid)).  Fix: surgical
+          # Python insertion at the top of the syscall body for setresuid,
+          # plus setuid/setreuid coverage, plus a debug counter in the
+          # driver hook to prove invocation.
+          _sy28 = os.path.join(root, "kernel", "sys.c")
+          if os.path.isfile(_sy28):
+              _sc28 = open(_sy28, encoding="utf-8", errors="replace").read()
+              if "WB-V28" in _sc28:
+                  print("=== fixup: v28 sys.c already present ===")
+              else:
+                  _chg28 = False
+                  _call28 = ("#ifdef CONFIG_KSU_SUSFS\n"
+                             "    if (ksu_handle_setresuid(R28, E28, S28)) {\n"
+                             "        pr_info(\"Something wrong with ksu_handle_setresuid()\\n\");\n"
+                             "    }\n"
+                             "#endif\n")
+                  for _sig28, _r28, _e28, _s28, _tag28 in (
+                      ("SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)", "ruid", "euid", "suid", "setresuid"),
+                      ("SYSCALL_DEFINE2(setreuid, uid_t, ruid, uid_t, euid)", "ruid", "euid", "euid", "setreuid"),
+                      ("SYSCALL_DEFINE1(setuid, uid_t, uid)", "uid", "uid", "uid", "setuid"),
+                  ):
+                      _i28 = _sc28.find(_sig28)
+                      if _i28 < 0:
+                          print("v28 sys.c anchor not found: %s" % _sig28)
+                          continue
+                      _j28 = _sc28.find("{", _i28 + len(_sig28))
+                      if _j28 < 0:
+                          print("v28 sys.c no body brace after: %s" % _sig28)
+                          continue
+                      _blk28 = _call28.replace("R28", _r28).replace("E28", _e28).replace("S28", _s28)
+                      _ins28 = _j28 + 1
+                      _sc28 = _sc28[:_ins28] + "\n" + _blk28 + _sc28[_ins28:]
+                      _chg28 = True
+                      print("=== fixup: v28 sys.c %s hook inserted at function top ===" % _tag28)
+                  if _chg28:
+                      open(_sy28, "w", encoding="utf-8").write(_sc28)
+                      for _ln28, _line28 in enumerate(_sc28.splitlines(), 1):
+                          if "ksu_handle_setresuid" in _line28:
+                              print("v28 sys.c line %d: %s" % (_ln28, _line28.strip()))
+              # locate lsm_hook.c for the debug counter
+              _lh28 = None
+              for _cand28 in (os.path.join(root, "KernelSU", "kernel", "hook", "lsm_hook.c"),
+                              os.path.join(root, "drivers", "kernelsu", "kernel", "hook", "lsm_hook.c"),
+                              os.path.join(root, "drivers", "kernelsu", "lsm_hook.c")):
+                  if os.path.isfile(_cand28):
+                      _lh28 = _cand28
+                      break
+              if _lh28:
+                  _lh28c = open(_lh28, encoding="utf-8", errors="replace").read()
+                  if "WB-V28" in _lh28c:
+                      print("=== fixup: v28 lsm_hook.c debug already present ===")
+                  else:
+                      _sig28d = "int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)\n{"
+                      _i28d = _lh28c.find(_sig28d)
+                      if _i28d >= 0:
+                          _dbg28 = ("\n"
+                                    "    { static atomic_t v28_seen = ATOMIC_INIT(0);\n"
+                                    "      if (atomic_read(&v28_seen) < 4) { atomic_inc(&v28_seen);\n"
+                                    "        pr_info(\"WB-V28: setresuid hook fired cur=%d ruid=%d\\n\", current_uid().val, ruid); } }\n")
+                          _ins28d = _i28d + len(_sig28d)
+                          _lh28c = _lh28c[:_ins28d] + _dbg28 + _lh28c[_ins28d:]
+                          open(_lh28, "w", encoding="utf-8").write(_lh28c)
+                          print("=== fixup: v28 lsm_hook.c debug counter added ===")
+                      else:
+                          print("=== fixup: v28 lsm_hook.c debug anchor not found ===")
+              else:
+                  print("=== fixup: v28 lsm_hook.c not found ===")
+          else:
+              print("=== fixup: v28 kernel/sys.c not found ===")
           _ks21 = os.path.join(root, "scripts", "kallsyms.c")
           if os.path.isfile(_ks21):
               _kt21 = open(_ks21, encoding="utf-8", errors="replace").read()
