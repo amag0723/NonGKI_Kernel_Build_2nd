@@ -1098,6 +1098,76 @@ jobs:
                       print("=== fixup: v26 supercall.c anchor not found; skipped ===")
           else:
               print("=== fixup: v26 supercall.c not found (candidates checked) ===")
+          # ---- v27: no-ksud setresuid fallback crowns the manager ----
+          # Round-10 proof: even with the v26 late-init on the reboot handler,
+          # the manager still shows "device abnormal" and its process holds NO
+          # driver fd.  Root cause: the manager's reboot(KSU_INSTALL_MAGIC)
+          # install syscall never reaches the kernel -- the app seccomp filter
+          # traps it first, so the v26 trigger is unreachable (chicken-egg).
+          # The real crowning path is ksu_handle_setresuid() in
+          # hook/lsm_hook.c: zygote specializes every app with setresuid()
+          # from uid 0.  Its guard `susfs_is_sid_equal(cred, susfs_zygote_sid)`
+          # can never match on a temporary boot because no ksud ever sets the
+          # zygote sid (stays 0).  Fix: when susfs_zygote_sid is 0 (only
+          # possible without ksud), fall back to uid-based detection --
+          # run the throne scan once (kernel cred reads packages.list and
+          # resolves ksu_manager_appid), then crown the current process when
+          # its setresuid target is the manager uid: disable_seccomp() +
+          # ksu_install_fd() -- exactly what handle_zygote_setresuid does for
+          # the manager in a normal boot.
+          _lh27 = None
+          for _cand in (os.path.join(root, "KernelSU", "kernel", "hook", "lsm_hook.c"),
+                        os.path.join(root, "drivers", "kernelsu", "kernel", "lsm_hook.c")):
+              if os.path.isfile(_cand):
+                  _lh27 = _cand
+                  break
+          if _lh27:
+              _lh = open(_lh27, encoding="utf-8", errors="replace").read()
+              if "WB-V27" in _lh:
+                  print("=== fixup: v27 lsm_hook.c fallback already present ===")
+              else:
+                  _a27 = ("    // We only interest in process spwaned by zygote or zygote_next\n"
+                          "    if (susfs_is_sid_equal(current_cred(), susfs_zygote_sid))\n"
+                          "        return handle_zygote_setresuid(ruid);")
+                  _b27 = ("#ifdef CONFIG_KSU_SUSFS\n"
+                          "    /* WB-V27: no-ksud fallback.  On a temporary (fastboot boot)\n"
+                          "     * there is no ksud, susfs_zygote_sid stays 0 and the sid\n"
+                          "     * checks below can never match -- the manager app then\n"
+                          "     * spawns with seccomp enabled and without a driver fd\n"
+                          "     * (\"device abnormal\" popup).  When no zygote sid has ever\n"
+                          "     * been resolved, detect the manager by uid instead: run the\n"
+                          "     * throne scan once (kernel cred reads packages.list and\n"
+                          "     * resolves ksu_manager_appid), then crown this process when\n"
+                          "     * its setresuid target uid is the manager uid.  This\n"
+                          "     * bypasses the reboot install path the app seccomp blocks. */\n"
+                          "    if (!susfs_zygote_sid) {\n"
+                          "        static atomic_t v27_once = ATOMIC_INIT(0);\n"
+                          "        if (!atomic_xchg(&v27_once, 1)) {\n"
+                          "            extern int ksu_observer_init(void);\n"
+                          "            extern void track_throne(bool prune_only);\n"
+                          "            ksu_observer_init();\n"
+                          "            track_throne(false);\n"
+                          "            pr_info(\"WB-V27: late init (observer + throne) done via setresuid fallback\\n\");\n"
+                          "        }\n"
+                          "        if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {\n"
+                          "            disable_seccomp();\n"
+                          "            pr_info(\"WB-V27: install fd for manager (sid fallback): %d\\n\", ruid);\n"
+                          "            ksu_install_fd();\n"
+                          "        }\n"
+                          "        return 0;\n"
+                          "    }\n"
+                          "#endif\n"
+                          "    // We only interest in process spwaned by zygote or zygote_next\n"
+                          "    if (susfs_is_sid_equal(current_cred(), susfs_zygote_sid))\n"
+                          "        return handle_zygote_setresuid(ruid);")
+                  if _a27 in _lh:
+                      _lh = _lh.replace(_a27, _b27, 1)
+                      open(_lh27, "w", encoding="utf-8").write(_lh)
+                      print("=== fixup: v27 lsm_hook.c setresuid fallback added ===")
+                  else:
+                      print("=== fixup: v27 lsm_hook.c anchor not found; skipped ===")
+          else:
+              print("=== fixup: v27 lsm_hook.c not found (candidates checked) ===")
           _ks21 = os.path.join(root, "scripts", "kallsyms.c")
           if os.path.isfile(_ks21):
               _kt21 = open(_ks21, encoding="utf-8", errors="replace").read()
