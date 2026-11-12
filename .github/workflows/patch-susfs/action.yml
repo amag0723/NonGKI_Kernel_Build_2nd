@@ -21,6 +21,13 @@ runs:
 
             else
               git clone https://github.com/${{ env.PATCHES_SOURCE }}.git -b ${{ env.PATCHES_BRANCH }} NonGKI_Kernel_Patches --depth=1 # It's not necessary.
+              # WB-V25: pin patches to the v22-verified commit (device boot matrix:
+              # bfb739425e + driver 850149efa4 = boots; anything newer with driver
+              # 6076949f26 = instant boot failure). Unpinned HEAD is a moving target.
+              git -C NonGKI_Kernel_Patches fetch --depth=1 origin bfb739425e6f98b357eea5df6d1eafe52ebbd824 \
+                && git -C NonGKI_Kernel_Patches checkout --detach FETCH_HEAD \
+                && echo "[+] WB-V25: NonGKI_Kernel_Patches pinned to bfb739425e (v22-verified)" \
+                || echo "[-] WB-V25: patches pin failed, staying on branch HEAD"
 
             fi
 
