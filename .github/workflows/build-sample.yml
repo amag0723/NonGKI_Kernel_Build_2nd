@@ -854,6 +854,49 @@ jobs:
               print("=== fixup: v35 stackprot made non-panicking ===")
           else:
               print("=== fixup: v35 wb_v34_stackprot.c NOT FOUND ===")
+
+          # ---- v36 (WB-V36): make a panic self-recovering and self-documenting ----
+          # v35 (run #46) was smoke-tested with `fastboot boot` (no partition
+          # write, active slot untouched) and still panicked into Qualcomm
+          # CrashDump 900E.  That rules out flashing/partition damage and,
+          # since both v35 suspects were already disarmed, points at a vendor
+          # module init crashing once __stack_chk_* resolves and the modules
+          # actually load (v33 booted only because NO vendor module loaded).
+          #
+          # The blocker to diagnosis is that a panic parks the device forever:
+          #   PANIC_TIMEOUT=-1                 (never auto reboot)
+          #   QCOM_FORCE_WDOG_BITE_ON_PANIC=y  (watchdog bite -> crash dump)
+          # so the only recovery is a 15-20s power-hold, which drops DRAM and
+          # takes the ramoops console with it -- every panic stays a black box.
+          #
+          # v36 changes exactly that, nothing else:
+          #   PANIC_TIMEOUT=15                -> warm reboot 15s after panic
+          #   QCOM_FORCE_WDOG_BITE_ON_PANIC=n -> no crash-dump parking
+          # PSTORE_RAM/PSTORE_CONSOLE stay on, so the panic console survives
+          # the warm reset.  Booted via `fastboot boot` the device then comes
+          # back on its own into slot _a with adb, and pstore has the answer.
+          _cfg36 = os.path.join(root,
+                                "arch/arm64/configs/vendor/sm8150-perf_defconfig")
+          if os.path.isfile(_cfg36):
+              _c36 = open(_cfg36, encoding="utf-8", errors="replace").read()
+              _o36 = _c36
+              _c36 = re.sub(r"^\s*CONFIG_PANIC_TIMEOUT[ =].*$",
+                            "CONFIG_PANIC_TIMEOUT=15", _c36, flags=re.M)
+              _c36 = re.sub(
+                  r"^\s*CONFIG_QCOM_FORCE_WDOG_BITE_ON_PANIC[ =].*$",
+                  "# CONFIG_QCOM_FORCE_WDOG_BITE_ON_PANIC is not set",
+                  _c36, flags=re.M)
+              if "CONFIG_PANIC_TIMEOUT=15" not in _c36:
+                  # 上游若改成别的写法则兜底追加，避免静默失效
+                  _c36 = _c36.rstrip("\n") + "\nCONFIG_PANIC_TIMEOUT=15\n"
+              if _c36 != _o36:
+                  open(_cfg36, "w", encoding="utf-8").write(_c36)
+                  print("=== fixup: v36 panic recoverable "
+                        "(timeout=15, no wdog bite) ===")
+              else:
+                  print("=== fixup: v36 panic options not in defconfig ===")
+          else:
+              print("=== fixup: v36 defconfig not found at %s ===" % _cfg36)
           # ---- v18: fix LLD "improper alignment for R_AARCH64_LDST32_ABS_LO12_NC" ----
           # 4.14 + Clang/LLD dies linking vmlinux with:
           #   ld.lld: error: ... improper alignment for relocation
