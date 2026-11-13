@@ -689,6 +689,75 @@ jobs:
                   print("=== fixup: v17 CONFIG_MODVERSIONS already disabled ===")
           else:
               print("=== fixup: v17 defconfig not found at %s ===" % _cfg)
+
+          # ---- v33: allow vendor-signed .ko modules to load (WiFi/sound fix) ----
+          # Root cause (measured on device, slot _b):
+          #   insmod /vendor/lib/modules/qca_cld3_wlan.ko
+          #     -> "Required key not available" / "PKCS#7 signature not signed
+          #        with a trusted key"  (err = -ENOKEY)
+          #   CONFIG_MODULE_SIG_FORCE=y makes sig_enforce=true at boot, and
+          #   sig_enforce is bool_enable_only (0->1 only) so it cannot be turned
+          #   off at runtime. All 34 vendor modules in modules.load were refused,
+          #   which is why wlan0 never appeared and audio HAL services vanished.
+          #   4.14 kernel/module.c module_sig_check() clears -ENOKEY when
+          #   !is_module_sig_enforced(), so simply dropping SIG_FORCE from the
+          #   defconfig lets the OEM-signed modules load.
+          # Second gate: v17 disables CONFIG_MODVERSIONS, so the kernel vermagic
+          #   is "4.14.180-perf+ SMP preempt mod_unload aarch64" while the vendor
+          #   .ko carries "... mod_unload modversions aarch64". same_magic()
+          #   would reject it. Patch vermagic.h so the kernel advertises the
+          #   "modversions " tag too. CONFIG_MODVERSIONS stays OFF, so
+          #   check_version() is a no-op (no symbol CRC checks) and we avoid the
+          #   Clang/LLD __crc_* vmlinux link error that v17 was working around.
+          _cfg33 = os.path.join(root,
+                                "arch/arm64/configs/vendor/sm8150-perf_defconfig")
+          if os.path.isfile(_cfg33):
+              _c33 = open(_cfg33, encoding="utf-8", errors="replace").read()
+              _n33 = re.sub(r"^\s*CONFIG_MODULE_SIG_FORCE[ =].*$",
+                            "# CONFIG_MODULE_SIG_FORCE is not set", _c33, flags=re.M)
+              if "# CONFIG_MODULE_SIG_FORCE is not set" not in _n33:
+                  _n33 = _n33.rstrip("\n") + "\n# CONFIG_MODULE_SIG_FORCE is not set\n"
+              if _n33 != _c33:
+                  open(_cfg33, "w", encoding="utf-8").write(_n33)
+                  print("=== fixup: v33 CONFIG_MODULE_SIG_FORCE disabled in defconfig ===")
+              else:
+                  print("=== fixup: v33 CONFIG_MODULE_SIG_FORCE already disabled ===")
+          else:
+              print("=== fixup: v33 defconfig not found at %s ===" % _cfg33)
+
+          _vh33 = os.path.join(root, "include", "linux", "vermagic.h")
+          if os.path.isfile(_vh33):
+              _t33 = open(_vh33, encoding="utf-8", errors="replace").read()
+              if "WB-V33" in _t33:
+                  print("=== fixup: v33 vermagic already patched ===")
+              else:
+                  _old33 = ('#ifdef CONFIG_MODVERSIONS\n'
+                            '#define MODULE_VERMAGIC_MODVERSIONS "modversions "\n'
+                            '#else\n'
+                            '#define MODULE_VERMAGIC_MODVERSIONS ""\n'
+                            '#endif')
+                  _new33 = ('/* WB-V33: advertise the modversions tag so vendor-signed\n'
+                            ' * .ko modules (built against the stock OEM kernel with\n'
+                            ' * CONFIG_MODVERSIONS=y) pass same_magic(). CRC checks\n'
+                            ' * stay disabled in this kernel, so this is cosmetic. */\n'
+                            '#define MODULE_VERMAGIC_MODVERSIONS "modversions "')
+                  if _old33 in _t33:
+                      _t33 = _t33.replace(_old33, _new33, 1)
+                      open(_vh33, "w", encoding="utf-8").write(_t33)
+                      print("=== fixup: v33 vermagic.h patched (exact block) ===")
+                  else:
+                      # 宽松兜底：逐行替换 #else 分支里的空串定义
+                      _n33b = re.sub(
+                          r'^#define MODULE_VERMAGIC_MODVERSIONS ""\s*$',
+                          '#define MODULE_VERMAGIC_MODVERSIONS "modversions "  /* WB-V33 */',
+                          _t33, flags=re.M)
+                      if _n33b != _t33:
+                          open(_vh33, "w", encoding="utf-8").write(_n33b)
+                          print("=== fixup: v33 vermagic.h patched (loose fallback) ===")
+                      else:
+                          print("=== fixup: v33 vermagic.h anchor NOT FOUND ===")
+          else:
+              print("=== fixup: v33 vermagic.h not found at %s ===" % _vh33)
           # ---- v18: fix LLD "improper alignment for R_AARCH64_LDST32_ABS_LO12_NC" ----
           # 4.14 + Clang/LLD dies linking vmlinux with:
           #   ld.lld: error: ... improper alignment for relocation
@@ -1301,127 +1370,6 @@ jobs:
                       print("=== fixup: v30 probe anchor not found ===")
           else:
               print("=== fixup: v30 lsm_hook.c not found ===")
-          # ---- v31: crown the manager by uid BEFORE any sid logic ----
-          # Round-4 decisive evidence chain:
-          #  - "Crowning manager: uid=10094" at 10.25s proves ksu_set_manager_appid
-          #    ran via the v26 supercall late-init (ksud escape-to-root), so the
-          #    appid IS valid from 10.25s on.
-          #  - Yet the v27 fallback never ran (no "via setresuid fallback" line)
-          #    and the v30 probe stayed silent even for a direct
-          #    setresuid(10094) from a root shell -> susfs_zygote_sid is
-          #    NON-ZERO for the whole boot, so the `if (!susfs_zygote_sid)`
-          #    fallback is dead and the sid_equal checks never match either
-          #    (the temporary-boot environment never marks zygote creds).
-          #  - Fix: hoist a uid-only crowning check above ALL sid logic in
-          #    ksu_handle_setresuid.  The manager appid is authoritative;
-          #    everything else keeps its sid gating untouched.
-          _lh31 = None
-          for _cand31 in (os.path.join(root, "KernelSU", "kernel", "hook", "lsm_hook.c"),
-                          os.path.join(root, "drivers", "kernelsu", "kernel", "hook", "lsm_hook.c"),
-                          os.path.join(root, "drivers", "kernelsu", "kernel", "lsm_hook.c")):
-              if os.path.isfile(_cand31):
-                  _lh31 = _cand31
-                  break
-          if _lh31:
-              _lh31c = open(_lh31, encoding="utf-8", errors="replace").read()
-              if "WB-V31" in _lh31c:
-                  print("=== fixup: v31 uid-only crowning already present ===")
-              else:
-                  _a31 = ("    // We only interest in process spwaned by zygote or zygote_next\n"
-                          "    if (susfs_is_sid_equal(current_cred(), susfs_zygote_sid))\n"
-                          "        return handle_zygote_setresuid(ruid);")
-                  _b31 = ("#ifdef CONFIG_KSU_SUSFS\n"
-                          "    /* WB-V31: crown the manager by uid regardless of sid state.\n"
-                          "     * On a temporary (fastboot boot) the zygote sid mechanism is\n"
-                          "     * never armed, so neither the sid==0 fallback nor the\n"
-                          "     * sid_equal checks can crown the manager.  The manager appid\n"
-                          "     * registered by track_throne is authoritative. */\n"
-                          "    if (likely(ksu_is_manager_appid_valid()) && unlikely(is_uid_manager(ruid))) {\n"
-                          "        disable_seccomp();\n"
-                          "        pr_info(\"WB-V31: install fd for manager (uid-only): %d\\n\", ruid);\n"
-                          "        ksu_install_fd();\n"
-                          "        return 0;\n"
-                          "    }\n"
-                          "#endif\n"
-                          "    // We only interest in process spwaned by zygote or zygote_next\n"
-                          "    if (susfs_is_sid_equal(current_cred(), susfs_zygote_sid))\n"
-                          "        return handle_zygote_setresuid(ruid);")
-                  if _a31 in _lh31c:
-                      _lh31c = _lh31c.replace(_a31, _b31, 1)
-                      open(_lh31, "w", encoding="utf-8").write(_lh31c)
-                      print("=== fixup: v31 uid-only crowning added ===")
-                  else:
-                      print("=== fixup: v31 crowning anchor not found ===")
-          else:
-              print("=== fixup: v31 lsm_hook.c not found ===")
-          # ---- v32: register the official task_fix_setuid LSM hook in the SUSFS branch ----
-          # Round-6 decisive evidence:
-          #  - zygote spawns apps via setuid()-style syscalls where the kernel
-          #    keeps ruid at 0 (only euid/suid become the target uid), so the
-          #    v28 wiring which reports `ruid` can never see the manager uid;
-          #    16 am-start rounds produced zero hook fires after 10.3s.
-          #  - The official non-SUSFS branch already handles this correctly:
-          #    ksu_task_fix_setuid() LSM hook sees new->uid (the TARGET uid)
-          #    for setuid/setreuid/setresuid alike.
-          #  - Fix: define the same hook for the SUSFS branch (crowning only;
-          #    susfs umount logic stays on the sid path) and register it
-          #    unconditionally.
-          _lh32 = None
-          for _cand32 in (os.path.join(root, "KernelSU", "kernel", "hook", "lsm_hook.c"),
-                          os.path.join(root, "drivers", "kernelsu", "kernel", "hook", "lsm_hook.c"),
-                          os.path.join(root, "drivers", "kernelsu", "kernel", "lsm_hook.c")):
-              if os.path.isfile(_cand32):
-                  _lh32 = _cand32
-                  break
-          if _lh32:
-              _lh32c = open(_lh32, encoding="utf-8", errors="replace").read()
-              if "WB-V32" in _lh32c:
-                  print("=== fixup: v32 task_fix_setuid already present ===")
-              else:
-                  _a32 = ("int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)\n"
-                          "{")
-                  _b32 = ("#ifdef CONFIG_KSU_SUSFS\n"
-                          "/* WB-V32: official task_fix_setuid path, SUSFS edition.\n"
-                          " * zygote spawns apps with ruid kept at 0 (setuid semantics),\n"
-                          " * so the setresuid wiring can never see the manager uid.\n"
-                          " * The task_fix_setuid LSM hook receives new->uid (target uid)\n"
-                          " * for setuid/setreuid/setresuid alike.  Crowning only; susfs\n"
-                          " * umount logic remains on the sid path. */\n"
-                          "static int ksu_task_fix_setuid(struct cred *new, const struct cred *old, int flags)\n"
-                          "{\n"
-                          "    uid_t new_uid;\n"
-                          "    if (unlikely(!new))\n"
-                          "        return 0;\n"
-                          "    new_uid = new->uid.val;\n"
-                          "    if (unlikely(is_uid_manager(new_uid))) {\n"
-                          "        disable_seccomp();\n"
-                          "        pr_info(\"WB-V32: install fd for manager (task_fix_setuid): %d\\n\", new_uid);\n"
-                          "        ksu_install_fd();\n"
-                          "    }\n"
-                          "    return 0;\n"
-                          "}\n"
-                          "#endif\n"
-                          "int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid)\n"
-                          "{")
-                  _ok32a = False
-                  if _a32 in _lh32c:
-                      _lh32c = _lh32c.replace(_a32, _b32, 1)
-                      _ok32a = True
-                      print("=== fixup: v32 hook definition added ===")
-                  else:
-                      print("=== fixup: v32 hook-def anchor not found ===")
-                  _a32b = ("#ifndef CONFIG_KSU_SUSFS\n"
-                           "    LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid),\n"
-                           "#endif")
-                  _b32b = ("    LSM_HOOK_INIT(task_fix_setuid, ksu_task_fix_setuid),")
-                  if _a32b in _lh32c:
-                      _lh32c = _lh32c.replace(_a32b, _b32b, 1)
-                      open(_lh32, "w", encoding="utf-8").write(_lh32c)
-                      print("=== fixup: v32 task_fix_setuid registered (SUSFS branch) ===")
-                  else:
-                      print("=== fixup: v32 hook-init anchor not found (def_added=%s) ===" % _ok32a)
-          else:
-              print("=== fixup: v32 lsm_hook.c not found ===")
           _ks21 = os.path.join(root, "scripts", "kallsyms.c")
           if os.path.isfile(_ks21):
               _kt21 = open(_ks21, encoding="utf-8", errors="replace").read()
