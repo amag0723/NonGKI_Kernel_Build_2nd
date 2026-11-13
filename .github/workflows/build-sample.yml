@@ -1837,11 +1837,11 @@ jobs:
             export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$PATH
           fi
           echo "=== WB-V37: building wlan.ko from official qcacld-3.0 source ==="
-          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=arm64 modules > wlan_build.log 2>&1 || true
+          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} CROSS_COMPILE=aarch64-linux-gnu- O=out ARCH=arm64 modules > wlan_build.log 2>&1 || true
           tail -60 wlan_build.log || true
           if ! find out -name 'wlan.ko' | grep -q wlan.ko; then
             echo "=== WB-V37: no wlan.ko from full modules build, retry with M= ==="
-            make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=arm64 M=drivers/staging/qcacld-3.0 modules > wlan_build_m.log 2>&1 || true
+            make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} CROSS_COMPILE=aarch64-linux-gnu- O=out ARCH=arm64 M=drivers/staging/qcacld-3.0 modules > wlan_build_m.log 2>&1 || true
             tail -60 wlan_build_m.log || true
           fi
           echo "=== WB-V37: wlan.ko candidates ==="
@@ -1869,7 +1869,7 @@ jobs:
           echo 'LyoKICogc3RhY2tjaGtfc2hpbS5jIC0gZXhwb3J0IF9fc3RhY2tfY2hrX2d1YXJkIC8gX19zdGFja19jaGtfZmFpbCBmb3IgdGhlCiAqIHByZWJ1aWx0IE9FTSB2ZW5kb3IgbW9kdWxlcyAoZS5nLiBxY2FfY2xkM193bGFuLmtvKS4KICoKICogV2h5IHRoaXMgZXhpc3RzIChtZWFzdXJlZCBvbiB0aGUgZGV2aWNlKToKICogICBUbyB3b3JrIGFyb3VuZCBhIFByb3Rvbi1DbGFuZyAxMyBjYy1vcHRpb24gcHJvYmUgZmFpbHVyZSwgdGhlIGNsb3VkCiAqICAga2VybmVsIGJ1aWxkIGZvcmNlcyBDT05GSUdfQ0NfU1RBQ0tQUk9URUNUT1JfU1RST05HIHRvIE5PTkUuIFRoYXQKICogICBzaWxlbnRseSByZW1vdmVzIHRoZSB0d28gZXhwb3J0ZWQgc3ltYm9scyBhYm92ZS4gRXZlcnkgT0VNIC5rbyBpbgogKiAgIC92ZW5kb3IvbGliL21vZHVsZXMgd2FzIGNvbXBpbGVkIHdpdGggLWZzdGFjay1wcm90ZWN0b3Itc3Ryb25nLCBhbmQKICogICBhbiBvZmZsaW5lIEVMRiBjaGVjayBvZiBxY2FfY2xkM193bGFuLmtvIHNob3dzIDQxNCB1bmRlZmluZWQgc3ltYm9scwogKiAgIG9mIHdoaWNoIGV4YWN0bHkgMiBhcmUgbWlzc2luZyBmcm9tIHRoaXMga2VybmVsOgogKiAgICAgICBfX3N0YWNrX2Noa19ndWFyZCwgX19zdGFja19jaGtfZmFpbAogKiAgIFRoZSBvdGhlciA0MTIgcmVzb2x2ZSBmaW5lLCBpbmNsdWRpbmcgX19pY25zc19yZWdpc3Rlcl9kcml2ZXIKICogICAodGhlIGljbnNzIHBsYXRmb3JtIGxheWVyIGlzIGFscmVhZHkgYnVpbHQgaW50byB0aGlzIGtlcm5lbCkuCiAqCiAqIFNvIGEgMzAtbGluZSBtb2R1bGUgdGhhdCBkZWZpbmVzIGFuZCBleHBvcnRzIHRob3NlIHR3byBzeW1ib2xzIGxldHMgdGhlCiAqIE9FTSBkcml2ZXIgbGluay4gTm8ga2VybmVsIHJlYnVpbGQsIG5vIHJlZmxhc2gsIHVuZG8gd2l0aCBybW1vZC4KICoKICogU2VtYW50aWNzOiBhcm02NCA0LjE0IHN0YWNrIHByb3RlY3RvciB1c2VzIGEgZ2xvYmFsIGd1YXJkIHZhbHVlLiBUaGUKICogcHJvbG9ndWUgbG9hZHMgX19zdGFja19jaGtfZ3VhcmQsIHRoZSBlcGlsb2d1ZSBjb21wYXJlcyBhZ2FpbnN0IHRoZSBzYW1lCiAqIGdsb2JhbCwgc28gYW55IHN0YWJsZSBub24temVybyB2YWx1ZSB3b3Jrcy4KICoKICogX19zdGFja19jaGtfZmFpbCgpIGRlbGliZXJhdGVseSBkb2VzIE5PVCBwYW5pYygpOiBDT05GSUdfUEFOSUNfT05fT09QUyBpcwogKiBub3Qgc2V0IGhlcmUsIGFuZCBhIHBhbmljIHdvdWxkIHBpbiB0aGUgZGV2aWNlIGluIGNyYXNoLWR1bXAgbW9kZSBhbmQgbG9zZQogKiBkbWVzZyBvbiB0aGUgaGFyZCBwb3dlciBjeWNsZS4gcHJfZXJyICsgZHVtcF9zdGFjayBrZWVwcyBpdCBvYnNlcnZhYmxlLgogKi8KI2luY2x1ZGUgPGxpbnV4L21vZHVsZS5oPgojaW5jbHVkZSA8bGludXgva2VybmVsLmg+CiNpbmNsdWRlIDxsaW51eC9zY2hlZC5oPgoKLyogU3RhYmxlIG5vbi16ZXJvIGNhbmFyeTsgb25seSBuZWVkcyB0byBzdGF5IGNvbnN0YW50LiAqLwp1bnNpZ25lZCBsb25nIF9fc3RhY2tfY2hrX2d1YXJkID0gMHgyZjNhOWMxZTViN2Q0MDY4VUw7CkVYUE9SVF9TWU1CT0woX19zdGFja19jaGtfZ3VhcmQpOwoKdm9pZCBfX3N0YWNrX2Noa19mYWlsKHZvaWQpCnsKCXByX2Vycigic3RhY2tjaGtfc2hpbTogc3RhY2sgY2FuYXJ5IGNvcnJ1cHRlZCBpbiBtb2R1bGVcbiIpOwoJZHVtcF9zdGFjaygpOwp9CkVYUE9SVF9TWU1CT0woX19zdGFja19jaGtfZmFpbCk7CgpzdGF0aWMgaW50IF9faW5pdCBzdGFja2Noa19zaGltX2luaXQodm9pZCkKewoJcHJfaW5mbygic3RhY2tjaGtfc2hpbTogbG9hZGVkLCBleHBvcnRlZCBfX3N0YWNrX2Noa19ndWFyZD0weCVseFxuIiwKCQlfX3N0YWNrX2Noa19ndWFyZCk7CglyZXR1cm4gMDsKfQoKc3RhdGljIHZvaWQgX19leGl0IHN0YWNrY2hrX3NoaW1fZXhpdCh2b2lkKQp7Cglwcl9pbmZvKCJzdGFja2Noa19zaGltOiB1bmxvYWRlZFxuIik7Cn0KCm1vZHVsZV9pbml0KHN0YWNrY2hrX3NoaW1faW5pdCk7Cm1vZHVsZV9leGl0KHN0YWNrY2hrX3NoaW1fZXhpdCk7CgpNT0RVTEVfTElDRU5TRSgiR1BMIik7Ck1PRFVMRV9ERVNDUklQVElPTigiRXhwb3J0IHN0YWNrIGNhbmFyeSBzeW1ib2xzIGZvciBwcmVidWlsdCB2ZW5kb3IgbW9kdWxlcyIpOwpNT0RVTEVfQVVUSE9SKCJ3YiIpOw==' | base64 -d > wb_shim/stackchk_shim.c
           printf 'obj-m := stackchk_shim.o\n' > wb_shim/Makefile
           wc -c wb_shim/stackchk_shim.c wb_shim/Makefile || true
-          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=arm64 M=wb_shim modules > shim_build.log 2>&1 || true
+          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} CROSS_COMPILE=aarch64-linux-gnu- O=out ARCH=arm64 M=wb_shim modules > shim_build.log 2>&1 || true
           tail -40 shim_build.log || true
           echo "=== WB-V38: collected ==="
           mkdir -p $GITHUB_WORKSPACE/shim_out
@@ -1882,6 +1882,28 @@ jobs:
           name: stackchk-shim
           path: ${{ github.workspace }}/shim_out/stackchk_shim.ko
           if-no-files-found: warn
+      - name: Check .ko arch (WB-V39)
+        shell: bash
+        run: |
+          echo "=== WB-V39: GCC_64=$GCC_64 ==="
+          echo "=== WB-V39: .ko e_machine (183 = AArch64) ==="
+          bad=0
+          for f in $GITHUB_WORKSPACE/wlan_out/*.ko $GITHUB_WORKSPACE/shim_out/*.ko; do
+            [ -f "$f" ] || continue
+            m=$(od -An -tu2 -j18 -N2 "$f" | tr -d " \n")
+            s=$(stat -c%s "$f")
+            if [ "$m" = "183" ]; then
+              echo "  OK   e_machine=$m size=$s  $f"
+            else
+              echo "  BAD  e_machine=$m size=$s  $f"
+              bad=1
+            fi
+          done
+          if [ $bad -ne 0 ]; then
+            echo "::error::WB-V39: 有 .ko 不是 AArch64，说明交叉编译变量仍未生效"
+          fi
+          ls -la $GITHUB_WORKSPACE/wlan_out $GITHUB_WORKSPACE/shim_out || true
+
 
 
 
