@@ -1873,7 +1873,8 @@ jobs:
           tail -40 shim_build.log || true
           echo "=== WB-V38: collected ==="
           mkdir -p $GITHUB_WORKSPACE/shim_out
-          find wb_shim -name '*.ko' -exec cp -v {} $GITHUB_WORKSPACE/shim_out/ \; || true
+          # O=out 时产物落在 out/wb_shim/，不在源码目录
+          find out -name 'stackchk_shim.ko' -exec cp -v {} $GITHUB_WORKSPACE/shim_out/ \; || true
           ls -la $GITHUB_WORKSPACE/shim_out || true
 
       - name: Upload stackchk shim (WB-V38)
@@ -1882,6 +1883,27 @@ jobs:
           name: stackchk-shim
           path: ${{ github.workspace }}/shim_out/stackchk_shim.ko
           if-no-files-found: warn
+      - name: Strip .ko debug info (WB-V40)
+        shell: bash
+        run: |
+          echo "=== WB-V40: strip debug info ==="
+          STRIP=""
+          for c in aarch64-linux-gnu-strip llvm-strip $GITHUB_WORKSPACE/clang-custom/bin/llvm-strip strip; do
+            if command -v "$c" >/dev/null 2>&1; then STRIP="$c"; break; fi
+            if [ -x "$c" ]; then STRIP="$c"; break; fi
+          done
+          echo "strip tool = ${STRIP:-none}"
+          for f in $GITHUB_WORKSPACE/wlan_out/*.ko $GITHUB_WORKSPACE/shim_out/*.ko; do
+            [ -f "$f" ] || continue
+            before=$(stat -c%s "$f")
+            if [ -n "$STRIP" ]; then
+              "$STRIP" --strip-debug "$f" 2>/dev/null || true
+            fi
+            m=$(od -An -tu2 -j18 -N2 "$f" | tr -d " \n")
+            echo "  $f  before=$before after=$(stat -c%s "$f") e_machine=$m"
+          done
+          ls -la $GITHUB_WORKSPACE/wlan_out $GITHUB_WORKSPACE/shim_out || true
+
       - name: Check .ko arch (WB-V39)
         shell: bash
         run: |
