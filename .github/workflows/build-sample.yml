@@ -758,6 +758,47 @@ jobs:
                           print("=== fixup: v33 vermagic.h anchor NOT FOUND ===")
           else:
               print("=== fixup: v33 vermagic.h not found at %s ===" % _vh33)
+
+          # ---- v34: export stack-protector runtime symbols for vendor .ko ----
+          # Measured on device with run #44 (v33): after SIG_FORCE was dropped,
+          # modprobe reported for nearly every vendor module
+          #   "<mod>: Unknown symbol __stack_chk_fail (err 0)"
+          #   "<mod>: Unknown symbol __stack_chk_guard (err 0)"
+          # The stock defconfig has CONFIG_CC_STACKPROTECTOR_STRONG=y, but an
+          # earlier fixup in this workflow forced NONE because Proton-Clang 13
+          # fails the -fstack-protector-strong cc-option probe (Makefile:1345).
+          # That silently removed two runtime-exported symbols the OEM .ko
+          # modules were linked against. Keep the compiler workaround, but
+          # provide + export the two symbols from a NEW always-built object
+          # (a separate file avoids any clash with conditional definitions
+          # that may already exist inside kernel/panic.c).
+          _kc34 = os.path.join(root, "kernel", "wb_v34_stackprot.c")
+          _src34 = (
+              '/* WB-V34: runtime symbols required by OEM vendor .ko modules. */\n'
+              '#include <linux/kernel.h>\n'
+              '#include <linux/export.h>\n'
+              '#include <linux/module.h>\n'
+              'unsigned long __stack_chk_guard = 0x5a3c7e91b2d04f6dUL;\n'
+              'EXPORT_SYMBOL(__stack_chk_guard);\n'
+              'void __stack_chk_fail(void)\n'
+              '{\n'
+              '    panic("stack-protector: kernel stack is corrupted\\n");\n'
+              '}\n'
+              'EXPORT_SYMBOL(__stack_chk_fail);\n')
+          open(_kc34, "w", encoding="utf-8").write(_src34)
+          print("=== fixup: v34 stackprot source written ===")
+          _mk34 = os.path.join(root, "kernel", "Makefile")
+          if os.path.isfile(_mk34):
+              _m34 = open(_mk34, encoding="utf-8", errors="replace").read()
+              if "wb_v34_stackprot" not in _m34:
+                  open(_mk34, "a", encoding="utf-8").write(
+                      "\n# WB-V34: export stack-protector symbols for OEM modules\n"
+                      "obj-y += wb_v34_stackprot.o\n")
+                  print("=== fixup: v34 kernel/Makefile hooked ===")
+              else:
+                  print("=== fixup: v34 kernel/Makefile already hooked ===")
+          else:
+              print("=== fixup: v34 kernel/Makefile NOT FOUND ===")
           # ---- v18: fix LLD "improper alignment for R_AARCH64_LDST32_ABS_LO12_NC" ----
           # 4.14 + Clang/LLD dies linking vmlinux with:
           #   ld.lld: error: ... improper alignment for relocation
