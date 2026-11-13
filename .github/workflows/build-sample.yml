@@ -1857,6 +1857,93 @@ jobs:
           name: wlan-ko
           path: ${{ github.workspace }}/wlan_out/wlan.ko
           if-no-files-found: warn
+      - name: Build stackchk shim (WB-V38)
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/device_kernel
+          if [ -n "${{ env.CLANG_SOURCE }}" ]; then
+            export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$PATH
+          fi
+          echo "=== WB-V38: building stackchk_shim.ko ==="
+          mkdir -p wb_shim
+          cat > wb_shim/stackchk_shim.c <<'WB_SHIM_C'
+          /*
+           * stackchk_shim.c - export __stack_chk_guard / __stack_chk_fail for the
+           * prebuilt OEM vendor modules (e.g. qca_cld3_wlan.ko).
+           *
+           * Why this exists (measured on the device):
+           *   To work around a Proton-Clang 13 cc-option probe failure, the cloud
+           *   kernel build forces CONFIG_CC_STACKPROTECTOR_STRONG to NONE. That
+           *   silently removes the two exported symbols above. Every OEM .ko in
+           *   /vendor/lib/modules was compiled with -fstack-protector-strong, and
+           *   an offline ELF check of qca_cld3_wlan.ko shows 414 undefined symbols
+           *   of which exactly 2 are missing from this kernel:
+           *       __stack_chk_guard, __stack_chk_fail
+           *   The other 412 resolve fine, including __icnss_register_driver
+           *   (the icnss platform layer is already built into this kernel).
+           *
+           * So a 30-line module that defines and exports those two symbols lets the
+           * OEM driver link. No kernel rebuild, no reflash, undo with rmmod.
+           *
+           * Semantics: arm64 4.14 stack protector uses a global guard value. The
+           * prologue loads __stack_chk_guard, the epilogue compares against the same
+           * global, so any stable non-zero value works.
+           *
+           * __stack_chk_fail() deliberately does NOT panic(): CONFIG_PANIC_ON_OOPS is
+           * not set here, and a panic would pin the device in crash-dump mode and lose
+           * dmesg on the hard power cycle. pr_err + dump_stack keeps it observable.
+           */
+          #include <linux/module.h>
+          #include <linux/kernel.h>
+          #include <linux/sched.h>
+
+          /* Stable non-zero canary; only needs to stay constant. */
+          unsigned long __stack_chk_guard = 0x2f3a9c1e5b7d4068UL;
+          EXPORT_SYMBOL(__stack_chk_guard);
+
+          void __stack_chk_fail(void)
+          {
+          	pr_err("stackchk_shim: stack canary corrupted in module\n");
+          	dump_stack();
+          }
+          EXPORT_SYMBOL(__stack_chk_fail);
+
+          static int __init stackchk_shim_init(void)
+          {
+          	pr_info("stackchk_shim: loaded, exported __stack_chk_guard=0x%lx\n",
+          		__stack_chk_guard);
+          	return 0;
+          }
+
+          static void __exit stackchk_shim_exit(void)
+          {
+          	pr_info("stackchk_shim: unloaded\n");
+          }
+
+          module_init(stackchk_shim_init);
+          module_exit(stackchk_shim_exit);
+
+          MODULE_LICENSE("GPL");
+          MODULE_DESCRIPTION("Export stack canary symbols for prebuilt vendor modules");
+          MODULE_AUTHOR("wb");
+WB_SHIM_C
+          cat > wb_shim/Makefile <<'WB_SHIM_MK'
+            obj-m := stackchk_shim.o
+WB_SHIM_MK
+          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=arm64 M=wb_shim modules > shim_build.log 2>&1 || true
+          tail -40 shim_build.log || true
+          echo "=== WB-V38: collected ==="
+          mkdir -p $GITHUB_WORKSPACE/shim_out
+          find wb_shim -name '*.ko' -exec cp -v {} $GITHUB_WORKSPACE/shim_out/ \; || true
+          ls -la $GITHUB_WORKSPACE/shim_out || true
+
+      - name: Upload stackchk shim (WB-V38)
+        uses: actions/upload-artifact@v4
+        with:
+          name: stackchk-shim
+          path: ${{ github.workspace }}/shim_out/stackchk_shim.ko
+          if-no-files-found: warn
+
 
 
       - name: Pack Process
