@@ -897,6 +897,70 @@ jobs:
                   print("=== fixup: v36 panic options not in defconfig ===")
           else:
               print("=== fixup: v36 defconfig not found at %s ===" % _cfg36)
+
+          # ---- v37 (WB-V37): build the official vendor WLAN driver ----
+          # Every custom kernel so far booted fine but had no wlan0, because
+          # /vendor ships a PREBUILT qca_cld3_wlan.ko linked against the OEM
+          # kernel (signature + vermagic + internal config all bound to it).
+          # Rather than chase that ABI, build the driver from the official
+          # source already merged into this tree by "Merge official OnePlus
+          # vendor tree", using Qualcomm's own in-kernel build path:
+          #   KERNEL_BUILD=y  ->  WLAN_ROOT        = drivers/staging/qcacld-3.0
+          #                       WLAN_COMMON_ROOT = ../qca-wifi-host-cmn
+          #                       WLAN_FW_API      = ../fw-api
+          #                       obj-$(CONFIG_QCA_CLD_WLAN) += wlan.o
+          # No driver source is edited; this is the vendor's own layout.
+          _w37 = os.path.join(root, "vendor", "qcom", "opensource", "wlan")
+          _st37 = os.path.join(root, "drivers", "staging")
+          if os.path.isdir(_w37) and os.path.isdir(_st37):
+              import shutil
+              _ok37 = True
+              for _d37 in ("qcacld-3.0", "qca-wifi-host-cmn", "fw-api"):
+                  _s37 = os.path.join(_w37, _d37)
+                  _t37 = os.path.join(_st37, _d37)
+                  if not os.path.isdir(_s37):
+                      print("=== fixup: v37 source missing %s ===" % _d37)
+                      _ok37 = False
+                      continue
+                  if os.path.isdir(_t37):
+                      shutil.rmtree(_t37)
+                  shutil.copytree(_s37, _t37, symlinks=True)
+                  print("=== fixup: v37 copied %s ===" % _d37)
+              if _ok37:
+                  _kc37 = os.path.join(_st37, "Kconfig")
+                  if os.path.isfile(_kc37):
+                      _x37 = open(_kc37, encoding="utf-8",
+                                  errors="replace").read()
+                      if "qcacld-3.0/Kconfig" not in _x37:
+                          _ln37 = ('source "drivers/staging/qcacld-3.0/Kconfig"\n')
+                          if "endif # STAGING" in _x37:
+                              _x37 = _x37.replace("endif # STAGING",
+                                                  _ln37 + "\nendif # STAGING", 1)
+                          else:
+                              _x37 = _x37.rstrip("\n") + "\n" + _ln37
+                          open(_kc37, "w", encoding="utf-8").write(_x37)
+                          print("=== fixup: v37 staging/Kconfig hooked ===")
+                  _mk37 = os.path.join(_st37, "Makefile")
+                  if os.path.isfile(_mk37):
+                      _y37 = open(_mk37, encoding="utf-8",
+                                  errors="replace").read()
+                      if "qcacld-3.0/" not in _y37:
+                          open(_mk37, "a", encoding="utf-8").write(
+                              "\nobj-$(CONFIG_QCA_CLD_WLAN) += qcacld-3.0/\n")
+                          print("=== fixup: v37 staging/Makefile hooked ===")
+                  _cfg37 = os.path.join(
+                      root, "arch/arm64/configs/vendor/sm8150-perf_defconfig")
+                  if os.path.isfile(_cfg37):
+                      _c37 = open(_cfg37, encoding="utf-8",
+                                  errors="replace").read()
+                      if "CONFIG_QCA_CLD_WLAN" not in _c37:
+                          open(_cfg37, "a", encoding="utf-8").write(
+                              "\nCONFIG_QCA_CLD_WLAN=m\n")
+                          print("=== fixup: v37 CONFIG_QCA_CLD_WLAN=m added ===")
+                      else:
+                          print("=== fixup: v37 CONFIG_QCA_CLD_WLAN present ===")
+          else:
+              print("=== fixup: v37 vendor wlan source NOT FOUND at %s ===" % _w37)
           # ---- v18: fix LLD "improper alignment for R_AARCH64_LDST32_ABS_LO12_NC" ----
           # 4.14 + Clang/LLD dies linking vmlinux with:
           #   ld.lld: error: ... improper alignment for relocation
@@ -1765,6 +1829,35 @@ jobs:
 
       - name: Build Process
         uses: ./.github/workflows/build-process
+      - name: Build vendor WLAN module (WB-V37)
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/device_kernel
+          if [ -n "${{ env.CLANG_SOURCE }}" ]; then
+            export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$PATH
+          fi
+          echo "=== WB-V37: building wlan.ko from official qcacld-3.0 source ==="
+          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=arm64 modules > wlan_build.log 2>&1 || true
+          tail -60 wlan_build.log || true
+          if ! find out -name 'wlan.ko' | grep -q wlan.ko; then
+            echo "=== WB-V37: no wlan.ko from full modules build, retry with M= ==="
+            make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH=arm64 M=drivers/staging/qcacld-3.0 modules > wlan_build_m.log 2>&1 || true
+            tail -60 wlan_build_m.log || true
+          fi
+          echo "=== WB-V37: wlan.ko candidates ==="
+          find out -name 'wlan.ko' -exec ls -l {} \; || true
+          mkdir -p $GITHUB_WORKSPACE/wlan_out
+          find out -name 'wlan.ko' -exec cp -v {} $GITHUB_WORKSPACE/wlan_out/ \; || true
+          echo "=== WB-V37: collected ==="
+          ls -la $GITHUB_WORKSPACE/wlan_out || true
+
+      - name: Upload wlan.ko (WB-V37)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wlan-ko
+          path: ${{ github.workspace }}/wlan_out/wlan.ko
+          if-no-files-found: warn
+
 
       - name: Pack Process
         uses: ./.github/workflows/pack-process
