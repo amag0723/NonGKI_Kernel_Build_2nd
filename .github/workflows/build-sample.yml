@@ -759,208 +759,70 @@ jobs:
           else:
               print("=== fixup: v33 vermagic.h not found at %s ===" % _vh33)
 
-          # ---- v34: export stack-protector runtime symbols for vendor .ko ----
-          # Measured on device with run #44 (v33): after SIG_FORCE was dropped,
-          # modprobe reported for nearly every vendor module
-          #   "<mod>: Unknown symbol __stack_chk_fail (err 0)"
-          #   "<mod>: Unknown symbol __stack_chk_guard (err 0)"
-          # The stock defconfig has CONFIG_CC_STACKPROTECTOR_STRONG=y, but an
-          # earlier fixup in this workflow forced NONE because Proton-Clang 13
-          # fails the -fstack-protector-strong cc-option probe (Makefile:1345).
-          # That silently removed two runtime-exported symbols the OEM .ko
-          # modules were linked against. Keep the compiler workaround, but
-          # provide + export the two symbols from a NEW always-built object
-          # (a separate file avoids any clash with conditional definitions
-          # that may already exist inside kernel/panic.c).
-          _kc34 = os.path.join(root, "kernel", "wb_v34_stackprot.c")
-          _src34 = (
-              '/* WB-V34: runtime symbols required by OEM vendor .ko modules. */\n'
-              '#include <linux/kernel.h>\n'
-              '#include <linux/export.h>\n'
-              '#include <linux/module.h>\n'
-              'unsigned long __stack_chk_guard = 0x5a3c7e91b2d04f6dUL;\n'
-              'EXPORT_SYMBOL(__stack_chk_guard);\n'
-              'void __stack_chk_fail(void)\n'
-              '{\n'
-              '    panic("stack-protector: kernel stack is corrupted\\n");\n'
-              '}\n'
-              'EXPORT_SYMBOL(__stack_chk_fail);\n')
-          open(_kc34, "w", encoding="utf-8").write(_src34)
-          print("=== fixup: v34 stackprot source written ===")
-          _mk34 = os.path.join(root, "kernel", "Makefile")
-          if os.path.isfile(_mk34):
-              _m34 = open(_mk34, encoding="utf-8", errors="replace").read()
-              if "wb_v34_stackprot" not in _m34:
-                  open(_mk34, "a", encoding="utf-8").write(
-                      "\n# WB-V34: export stack-protector symbols for OEM modules\n"
-                      "obj-y += wb_v34_stackprot.o\n")
-                  print("=== fixup: v34 kernel/Makefile hooked ===")
+          # ---- v41: default the NFC chipset so pn544_probe() can bind ----
+          # Measured on device (slot _b, v33 + stackchk_shim + OEM wlan):
+          #   * /proc/device-tree has NO "oplus-nfc-chipset" node
+          #     (grep -rl oplus-nfc-chipset /proc/device-tree -> empty)
+          #   * /proc/oplus_nfc/ does not exist  -> oplus_nfc_probe() never ran
+          #   * /sys/bus/i2c/devices/4-0028 = "pn544" (nxp,pn544 on i2c-4)
+          #     but /sys/bus/i2c/drivers/pn553/ and /nq-nci/ are both empty
+          #   * /dev/pn553 missing, and the HAL binary
+          #     /odm/bin/hw/android.hardware.nfc@1.2-service hardcodes
+          #     "/dev/pn553" (strings), while pn544_probe() registers a misc
+          #     device literally named "pn553" -> the names DO match.
+          # So the ONLY gate is CHECK_NFC_CHIP(PN557) in pn553.c:
+          #     is_support_chip() -> support_nfc == false -> return -ENOMEM
+          # and support_nfc is set only by oplus_nfc_probe(), which never runs
+          # because the dts node is absent in the OSS device tree.
+          # Default it in the subsys_initcall; platform_driver_register() probes
+          # afterwards, so a real dts node still wins.
+          _nf41 = os.path.join(root, "drivers", "nfc", "oplus_nfc", "oplus_nfc.c")
+          if os.path.isfile(_nf41):
+              _t41 = open(_nf41, encoding="utf-8", errors="replace").read()
+              if "WB-V41" in _t41:
+                  print("=== fixup: v41 NFC chipset default already applied ===")
               else:
-                  print("=== fixup: v34 kernel/Makefile already hooked ===")
-          else:
-              print("=== fixup: v34 kernel/Makefile NOT FOUND ===")
-
-          # ---- v35: make the two panic suspects observable instead ----
-          # Measured with run #45 (v34): the kernel panicked before adbd came
-          # up (device stuck in Qualcomm CrashDump, PID 900E).  Config shows
-          #   PANIC_ON_OOPS=n        -> a plain oops does NOT panic
-          #   PANIC_ON_SSR_NOTIF_TIMEOUT=y  (+ SSR_SUBSYS_NOTIF_TIMEOUT=20000)
-          #   PANIC_TIMEOUT=-1        -> no auto reboot
-          # so something called panic() explicitly. Two candidates:
-          #   1) __stack_chk_fail() below
-          #   2) qca_cld3_wlan.ko (first entry of modules.load) failing init
-          #      -> iCNSS SSR -> subsys_notif 20s timeout -> panic
-          # v35 disarms both as *panic* sources so the box can reach adbd and
-          # leave a dmesg behind.  Wi-Fi logic itself is unchanged.
-          _cfg35 = os.path.join(root,
-                                "arch/arm64/configs/vendor/sm8150-perf_defconfig")
-          if os.path.isfile(_cfg35):
-              _c35 = open(_cfg35, encoding="utf-8", errors="replace").read()
-              _n35 = re.sub(r"^\s*CONFIG_PANIC_ON_SSR_NOTIF_TIMEOUT[ =].*$",
-                            "# CONFIG_PANIC_ON_SSR_NOTIF_TIMEOUT is not set",
-                            _c35, flags=re.M)
-              if _n35 != _c35:
-                  open(_cfg35, "w", encoding="utf-8").write(_n35)
-                  print("=== fixup: v35 PANIC_ON_SSR_NOTIF_TIMEOUT disabled ===")
-              else:
-                  print("=== fixup: v35 PANIC_ON_SSR_NOTIF_TIMEOUT not in defconfig ===")
-          else:
-              print("=== fixup: v35 defconfig not found at %s ===" % _cfg35)
-
-          _kc35 = os.path.join(root, "kernel", "wb_v34_stackprot.c")
-          if os.path.isfile(_kc35):
-              _src35 = (
-                  '/* WB-V34/V35: runtime symbols required by OEM vendor .ko modules.\n'
-                  ' * The kernel is built with CC_STACKPROTECTOR_NONE (a Proton-Clang 13\n'
-                  ' * cc-option workaround), so these are only referenced by external\n'
-                  ' * modules.  WB-V35: do NOT panic() from here -- a panic before adbd\n'
-                  ' * starts leaves the device in Qualcomm CrashDump with no way to read\n'
-                  ' * dmesg.  Emit the diagnostic and let the oops path kill only the\n'
-                  ' * caller (PANIC_ON_OOPS is off), so the system stays inspectable. */\n'
-                  '#include <linux/kernel.h>\n'
-                  '#include <linux/export.h>\n'
-                  '#include <linux/module.h>\n'
-                  '#include <linux/bug.h>\n'
-                  'unsigned long __stack_chk_guard = 0x5a3c7e91b2d04f6dUL;\n'
-                  'EXPORT_SYMBOL(__stack_chk_guard);\n'
-                  'void __stack_chk_fail(void)\n'
-                  '{\n'
-                  '    pr_err("WB-V35 stack-protector: canary mismatch, caller=%pS\\n",\n'
-                  '           __builtin_return_address(0));\n'
-                  '    BUG();\n'
-                  '}\n'
-                  'EXPORT_SYMBOL(__stack_chk_fail);\n')
-              open(_kc35, "w", encoding="utf-8").write(_src35)
-              print("=== fixup: v35 stackprot made non-panicking ===")
-          else:
-              print("=== fixup: v35 wb_v34_stackprot.c NOT FOUND ===")
-
-          # ---- v36 (WB-V36): make a panic self-recovering and self-documenting ----
-          # v35 (run #46) was smoke-tested with `fastboot boot` (no partition
-          # write, active slot untouched) and still panicked into Qualcomm
-          # CrashDump 900E.  That rules out flashing/partition damage and,
-          # since both v35 suspects were already disarmed, points at a vendor
-          # module init crashing once __stack_chk_* resolves and the modules
-          # actually load (v33 booted only because NO vendor module loaded).
-          #
-          # The blocker to diagnosis is that a panic parks the device forever:
-          #   PANIC_TIMEOUT=-1                 (never auto reboot)
-          #   QCOM_FORCE_WDOG_BITE_ON_PANIC=y  (watchdog bite -> crash dump)
-          # so the only recovery is a 15-20s power-hold, which drops DRAM and
-          # takes the ramoops console with it -- every panic stays a black box.
-          #
-          # v36 changes exactly that, nothing else:
-          #   PANIC_TIMEOUT=15                -> warm reboot 15s after panic
-          #   QCOM_FORCE_WDOG_BITE_ON_PANIC=n -> no crash-dump parking
-          # PSTORE_RAM/PSTORE_CONSOLE stay on, so the panic console survives
-          # the warm reset.  Booted via `fastboot boot` the device then comes
-          # back on its own into slot _a with adb, and pstore has the answer.
-          _cfg36 = os.path.join(root,
-                                "arch/arm64/configs/vendor/sm8150-perf_defconfig")
-          if os.path.isfile(_cfg36):
-              _c36 = open(_cfg36, encoding="utf-8", errors="replace").read()
-              _o36 = _c36
-              _c36 = re.sub(r"^\s*CONFIG_PANIC_TIMEOUT[ =].*$",
-                            "CONFIG_PANIC_TIMEOUT=15", _c36, flags=re.M)
-              _c36 = re.sub(
-                  r"^\s*CONFIG_QCOM_FORCE_WDOG_BITE_ON_PANIC[ =].*$",
-                  "# CONFIG_QCOM_FORCE_WDOG_BITE_ON_PANIC is not set",
-                  _c36, flags=re.M)
-              if "CONFIG_PANIC_TIMEOUT=15" not in _c36:
-                  # 上游若改成别的写法则兜底追加，避免静默失效
-                  _c36 = _c36.rstrip("\n") + "\nCONFIG_PANIC_TIMEOUT=15\n"
-              if _c36 != _o36:
-                  open(_cfg36, "w", encoding="utf-8").write(_c36)
-                  print("=== fixup: v36 panic recoverable "
-                        "(timeout=15, no wdog bite) ===")
-              else:
-                  print("=== fixup: v36 panic options not in defconfig ===")
-          else:
-              print("=== fixup: v36 defconfig not found at %s ===" % _cfg36)
-
-          # ---- v37 (WB-V37): build the official vendor WLAN driver ----
-          # Every custom kernel so far booted fine but had no wlan0, because
-          # /vendor ships a PREBUILT qca_cld3_wlan.ko linked against the OEM
-          # kernel (signature + vermagic + internal config all bound to it).
-          # Rather than chase that ABI, build the driver from the official
-          # source already merged into this tree by "Merge official OnePlus
-          # vendor tree", using Qualcomm's own in-kernel build path:
-          #   KERNEL_BUILD=y  ->  WLAN_ROOT        = drivers/staging/qcacld-3.0
-          #                       WLAN_COMMON_ROOT = ../qca-wifi-host-cmn
-          #                       WLAN_FW_API      = ../fw-api
-          #                       obj-$(CONFIG_QCA_CLD_WLAN) += wlan.o
-          # No driver source is edited; this is the vendor's own layout.
-          _w37 = os.path.join(root, "vendor", "qcom", "opensource", "wlan")
-          _st37 = os.path.join(root, "drivers", "staging")
-          if os.path.isdir(_w37) and os.path.isdir(_st37):
-              import shutil
-              _ok37 = True
-              for _d37 in ("qcacld-3.0", "qca-wifi-host-cmn", "fw-api"):
-                  _s37 = os.path.join(_w37, _d37)
-                  _t37 = os.path.join(_st37, _d37)
-                  if not os.path.isdir(_s37):
-                      print("=== fixup: v37 source missing %s ===" % _d37)
-                      _ok37 = False
-                      continue
-                  if os.path.isdir(_t37):
-                      shutil.rmtree(_t37)
-                  shutil.copytree(_s37, _t37, symlinks=True)
-                  print("=== fixup: v37 copied %s ===" % _d37)
-              if _ok37:
-                  _kc37 = os.path.join(_st37, "Kconfig")
-                  if os.path.isfile(_kc37):
-                      _x37 = open(_kc37, encoding="utf-8",
-                                  errors="replace").read()
-                      if "qcacld-3.0/Kconfig" not in _x37:
-                          _ln37 = ('source "drivers/staging/qcacld-3.0/Kconfig"\n')
-                          if "endif # STAGING" in _x37:
-                              _x37 = _x37.replace("endif # STAGING",
-                                                  _ln37 + "\nendif # STAGING", 1)
-                          else:
-                              _x37 = _x37.rstrip("\n") + "\n" + _ln37
-                          open(_kc37, "w", encoding="utf-8").write(_x37)
-                          print("=== fixup: v37 staging/Kconfig hooked ===")
-                  _mk37 = os.path.join(_st37, "Makefile")
-                  if os.path.isfile(_mk37):
-                      _y37 = open(_mk37, encoding="utf-8",
-                                  errors="replace").read()
-                      if "qcacld-3.0/" not in _y37:
-                          open(_mk37, "a", encoding="utf-8").write(
-                              "\nobj-$(CONFIG_QCA_CLD_WLAN) += qcacld-3.0/\n")
-                          print("=== fixup: v37 staging/Makefile hooked ===")
-                  _cfg37 = os.path.join(
-                      root, "arch/arm64/configs/vendor/sm8150-perf_defconfig")
-                  if os.path.isfile(_cfg37):
-                      _c37 = open(_cfg37, encoding="utf-8",
-                                  errors="replace").read()
-                      if "CONFIG_QCA_CLD_WLAN" not in _c37:
-                          open(_cfg37, "a", encoding="utf-8").write(
-                              "\nCONFIG_QCA_CLD_WLAN=m\n")
-                          print("=== fixup: v37 CONFIG_QCA_CLD_WLAN=m added ===")
+                  _patch41 = (
+                      '\t/* WB-V41: guacamole OOS12 device tree ships no\n'
+                      '\t * "oplus-nfc-chipset" node, so oplus_nfc_probe() never\n'
+                      '\t * runs and support_nfc stays false. pn553.c\n'
+                      '\t * pn544_probe() begins with CHECK_NFC_CHIP(PN557), which\n'
+                      '\t * then returns -ENOMEM: the driver never binds,\n'
+                      '\t * /dev/pn553 is never created, and the NFC HAL\n'
+                      '\t * (/odm/bin/hw/android.hardware.nfc@1.2-service, which\n'
+                      '\t * opens /dev/pn553) cannot register its interface.\n'
+                      '\t * com.android.nfc then crash-loops and takes zygote /\n'
+                      '\t * system_server down with it. Default the chipset so\n'
+                      '\t * probe proceeds; a real dts node still overrides this\n'
+                      '\t * because platform_driver_register() probes later.\n'
+                      '\t */\n'
+                      '\tif (!support_nfc) {\n'
+                      '\t\tstrcpy(current_chipset, "PN557");\n'
+                      '\t\tsupport_nfc = true;\n'
+                      '\t\tpr_err("WB-V41: default chipset PN557"\n'
+                      '\t\t       " (no oplus-nfc-chipset node)\\n");\n'
+                      '\t}\n')
+                  _old41 = ('static int __init oplus_nfc_init(void)\n'
+                            '{\n'
+                            '\tpr_err("enter %s", __func__);\n')
+                  if _old41 in _t41:
+                      _t41 = _t41.replace(_old41, _old41 + _patch41, 1)
+                      open(_nf41, "w", encoding="utf-8").write(_t41)
+                      print("=== fixup: v41 NFC chipset default injected (exact) ===")
+                  else:
+                      # fallback: 直接插在已经确认存在的 register 行之前
+                      _reg41 = "\treturn platform_driver_register(&oplus_nfc_driver);\n"
+                      if _reg41 in _t41:
+                          _t41 = _t41.replace(_reg41, _patch41 + _reg41, 1)
+                          open(_nf41, "w", encoding="utf-8").write(_t41)
+                          print("=== fixup: v41 NFC chipset default injected (fallback) ===")
                       else:
-                          print("=== fixup: v37 CONFIG_QCA_CLD_WLAN present ===")
+                          print("=== fixup: v41 NFC anchor NOT FOUND in %s ===" % _nf41)
+              _chk41 = open(_nf41, encoding="utf-8", errors="replace").read()
+              print("=== fixup: v41 verify WB-V41=%s support_nfc=%s ==="
+                    % ("WB-V41" in _chk41, "support_nfc = true" in _chk41))
           else:
-              print("=== fixup: v37 vendor wlan source NOT FOUND at %s ===" % _w37)
+              print("=== fixup: v41 oplus_nfc.c not found at %s ===" % _nf41)
           # ---- v18: fix LLD "improper alignment for R_AARCH64_LDST32_ABS_LO12_NC" ----
           # 4.14 + Clang/LLD dies linking vmlinux with:
           #   ld.lld: error: ... improper alignment for relocation
@@ -1829,105 +1691,6 @@ jobs:
 
       - name: Build Process
         uses: ./.github/workflows/build-process
-      - name: Build vendor WLAN module (WB-V37)
-        shell: bash
-        run: |
-          cd $GITHUB_WORKSPACE/device_kernel
-          if [ -n "${{ env.CLANG_SOURCE }}" ]; then
-            export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$PATH
-          fi
-          echo "=== WB-V37: building wlan.ko from official qcacld-3.0 source ==="
-          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} CROSS_COMPILE=aarch64-linux-gnu- O=out ARCH=arm64 modules > wlan_build.log 2>&1 || true
-          tail -60 wlan_build.log || true
-          if ! find out -name 'wlan.ko' | grep -q wlan.ko; then
-            echo "=== WB-V37: no wlan.ko from full modules build, retry with M= ==="
-            make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} CROSS_COMPILE=aarch64-linux-gnu- O=out ARCH=arm64 M=drivers/staging/qcacld-3.0 modules > wlan_build_m.log 2>&1 || true
-            tail -60 wlan_build_m.log || true
-          fi
-          echo "=== WB-V37: wlan.ko candidates ==="
-          find out -name 'wlan.ko' -exec ls -l {} \; || true
-          mkdir -p $GITHUB_WORKSPACE/wlan_out
-          find out -name 'wlan.ko' -exec cp -v {} $GITHUB_WORKSPACE/wlan_out/ \; || true
-          echo "=== WB-V37: collected ==="
-          ls -la $GITHUB_WORKSPACE/wlan_out || true
-
-      - name: Upload wlan.ko (WB-V37)
-        uses: actions/upload-artifact@v4
-        with:
-          name: wlan-ko
-          path: ${{ github.workspace }}/wlan_out/wlan.ko
-          if-no-files-found: warn
-      - name: Build stackchk shim (WB-V38)
-        shell: bash
-        run: |
-          cd $GITHUB_WORKSPACE/device_kernel
-          if [ -n "${{ env.CLANG_SOURCE }}" ]; then
-            export PATH=$GITHUB_WORKSPACE/clang-custom/bin:$PATH
-          fi
-          echo "=== WB-V38: building stackchk_shim.ko ==="
-          mkdir -p wb_shim
-          echo 'LyoKICogc3RhY2tjaGtfc2hpbS5jIC0gZXhwb3J0IF9fc3RhY2tfY2hrX2d1YXJkIC8gX19zdGFja19jaGtfZmFpbCBmb3IgdGhlCiAqIHByZWJ1aWx0IE9FTSB2ZW5kb3IgbW9kdWxlcyAoZS5nLiBxY2FfY2xkM193bGFuLmtvKS4KICoKICogV2h5IHRoaXMgZXhpc3RzIChtZWFzdXJlZCBvbiB0aGUgZGV2aWNlKToKICogICBUbyB3b3JrIGFyb3VuZCBhIFByb3Rvbi1DbGFuZyAxMyBjYy1vcHRpb24gcHJvYmUgZmFpbHVyZSwgdGhlIGNsb3VkCiAqICAga2VybmVsIGJ1aWxkIGZvcmNlcyBDT05GSUdfQ0NfU1RBQ0tQUk9URUNUT1JfU1RST05HIHRvIE5PTkUuIFRoYXQKICogICBzaWxlbnRseSByZW1vdmVzIHRoZSB0d28gZXhwb3J0ZWQgc3ltYm9scyBhYm92ZS4gRXZlcnkgT0VNIC5rbyBpbgogKiAgIC92ZW5kb3IvbGliL21vZHVsZXMgd2FzIGNvbXBpbGVkIHdpdGggLWZzdGFjay1wcm90ZWN0b3Itc3Ryb25nLCBhbmQKICogICBhbiBvZmZsaW5lIEVMRiBjaGVjayBvZiBxY2FfY2xkM193bGFuLmtvIHNob3dzIDQxNCB1bmRlZmluZWQgc3ltYm9scwogKiAgIG9mIHdoaWNoIGV4YWN0bHkgMiBhcmUgbWlzc2luZyBmcm9tIHRoaXMga2VybmVsOgogKiAgICAgICBfX3N0YWNrX2Noa19ndWFyZCwgX19zdGFja19jaGtfZmFpbAogKiAgIFRoZSBvdGhlciA0MTIgcmVzb2x2ZSBmaW5lLCBpbmNsdWRpbmcgX19pY25zc19yZWdpc3Rlcl9kcml2ZXIKICogICAodGhlIGljbnNzIHBsYXRmb3JtIGxheWVyIGlzIGFscmVhZHkgYnVpbHQgaW50byB0aGlzIGtlcm5lbCkuCiAqCiAqIFNvIGEgMzAtbGluZSBtb2R1bGUgdGhhdCBkZWZpbmVzIGFuZCBleHBvcnRzIHRob3NlIHR3byBzeW1ib2xzIGxldHMgdGhlCiAqIE9FTSBkcml2ZXIgbGluay4gTm8ga2VybmVsIHJlYnVpbGQsIG5vIHJlZmxhc2gsIHVuZG8gd2l0aCBybW1vZC4KICoKICogU2VtYW50aWNzOiBhcm02NCA0LjE0IHN0YWNrIHByb3RlY3RvciB1c2VzIGEgZ2xvYmFsIGd1YXJkIHZhbHVlLiBUaGUKICogcHJvbG9ndWUgbG9hZHMgX19zdGFja19jaGtfZ3VhcmQsIHRoZSBlcGlsb2d1ZSBjb21wYXJlcyBhZ2FpbnN0IHRoZSBzYW1lCiAqIGdsb2JhbCwgc28gYW55IHN0YWJsZSBub24temVybyB2YWx1ZSB3b3Jrcy4KICoKICogX19zdGFja19jaGtfZmFpbCgpIGRlbGliZXJhdGVseSBkb2VzIE5PVCBwYW5pYygpOiBDT05GSUdfUEFOSUNfT05fT09QUyBpcwogKiBub3Qgc2V0IGhlcmUsIGFuZCBhIHBhbmljIHdvdWxkIHBpbiB0aGUgZGV2aWNlIGluIGNyYXNoLWR1bXAgbW9kZSBhbmQgbG9zZQogKiBkbWVzZyBvbiB0aGUgaGFyZCBwb3dlciBjeWNsZS4gcHJfZXJyICsgZHVtcF9zdGFjayBrZWVwcyBpdCBvYnNlcnZhYmxlLgogKi8KI2luY2x1ZGUgPGxpbnV4L21vZHVsZS5oPgojaW5jbHVkZSA8bGludXgva2VybmVsLmg+CiNpbmNsdWRlIDxsaW51eC9zY2hlZC5oPgoKLyogU3RhYmxlIG5vbi16ZXJvIGNhbmFyeTsgb25seSBuZWVkcyB0byBzdGF5IGNvbnN0YW50LiAqLwp1bnNpZ25lZCBsb25nIF9fc3RhY2tfY2hrX2d1YXJkID0gMHgyZjNhOWMxZTViN2Q0MDY4VUw7CkVYUE9SVF9TWU1CT0woX19zdGFja19jaGtfZ3VhcmQpOwoKdm9pZCBfX3N0YWNrX2Noa19mYWlsKHZvaWQpCnsKCXByX2Vycigic3RhY2tjaGtfc2hpbTogc3RhY2sgY2FuYXJ5IGNvcnJ1cHRlZCBpbiBtb2R1bGVcbiIpOwoJZHVtcF9zdGFjaygpOwp9CkVYUE9SVF9TWU1CT0woX19zdGFja19jaGtfZmFpbCk7CgpzdGF0aWMgaW50IF9faW5pdCBzdGFja2Noa19zaGltX2luaXQodm9pZCkKewoJcHJfaW5mbygic3RhY2tjaGtfc2hpbTogbG9hZGVkLCBleHBvcnRlZCBfX3N0YWNrX2Noa19ndWFyZD0weCVseFxuIiwKCQlfX3N0YWNrX2Noa19ndWFyZCk7CglyZXR1cm4gMDsKfQoKc3RhdGljIHZvaWQgX19leGl0IHN0YWNrY2hrX3NoaW1fZXhpdCh2b2lkKQp7Cglwcl9pbmZvKCJzdGFja2Noa19zaGltOiB1bmxvYWRlZFxuIik7Cn0KCm1vZHVsZV9pbml0KHN0YWNrY2hrX3NoaW1faW5pdCk7Cm1vZHVsZV9leGl0KHN0YWNrY2hrX3NoaW1fZXhpdCk7CgpNT0RVTEVfTElDRU5TRSgiR1BMIik7Ck1PRFVMRV9ERVNDUklQVElPTigiRXhwb3J0IHN0YWNrIGNhbmFyeSBzeW1ib2xzIGZvciBwcmVidWlsdCB2ZW5kb3IgbW9kdWxlcyIpOwpNT0RVTEVfQVVUSE9SKCJ3YiIpOw==' | base64 -d > wb_shim/stackchk_shim.c
-          printf 'obj-m := stackchk_shim.o\n' > wb_shim/Makefile
-          wc -c wb_shim/stackchk_shim.c wb_shim/Makefile || true
-          make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} CROSS_COMPILE=aarch64-linux-gnu- O=out ARCH=arm64 M=wb_shim modules > shim_build.log 2>&1 || true
-          tail -40 shim_build.log || true
-          echo "=== WB-V38: collected ==="
-          mkdir -p $GITHUB_WORKSPACE/shim_out
-          # O=out 时产物落在 out/wb_shim/，不在源码目录
-          find out -name 'stackchk_shim.ko' -exec cp -v {} $GITHUB_WORKSPACE/shim_out/ \; || true
-          ls -la $GITHUB_WORKSPACE/shim_out || true
-
-      - name: Upload stackchk shim (WB-V38)
-        uses: actions/upload-artifact@v4
-        with:
-          name: stackchk-shim
-          path: ${{ github.workspace }}/shim_out/stackchk_shim.ko
-          if-no-files-found: warn
-      - name: Strip .ko debug info (WB-V40)
-        shell: bash
-        run: |
-          echo "=== WB-V40: strip debug info ==="
-          STRIP=""
-          for c in aarch64-linux-gnu-strip llvm-strip $GITHUB_WORKSPACE/clang-custom/bin/llvm-strip strip; do
-            if command -v "$c" >/dev/null 2>&1; then STRIP="$c"; break; fi
-            if [ -x "$c" ]; then STRIP="$c"; break; fi
-          done
-          echo "strip tool = ${STRIP:-none}"
-          for f in $GITHUB_WORKSPACE/wlan_out/*.ko $GITHUB_WORKSPACE/shim_out/*.ko; do
-            [ -f "$f" ] || continue
-            before=$(stat -c%s "$f")
-            if [ -n "$STRIP" ]; then
-              "$STRIP" --strip-debug "$f" 2>/dev/null || true
-            fi
-            m=$(od -An -tu2 -j18 -N2 "$f" | tr -d " \n")
-            echo "  $f  before=$before after=$(stat -c%s "$f") e_machine=$m"
-          done
-          ls -la $GITHUB_WORKSPACE/wlan_out $GITHUB_WORKSPACE/shim_out || true
-
-      - name: Check .ko arch (WB-V39)
-        shell: bash
-        run: |
-          echo "=== WB-V39: GCC_64=$GCC_64 ==="
-          echo "=== WB-V39: .ko e_machine (183 = AArch64) ==="
-          bad=0
-          for f in $GITHUB_WORKSPACE/wlan_out/*.ko $GITHUB_WORKSPACE/shim_out/*.ko; do
-            [ -f "$f" ] || continue
-            m=$(od -An -tu2 -j18 -N2 "$f" | tr -d " \n")
-            s=$(stat -c%s "$f")
-            if [ "$m" = "183" ]; then
-              echo "  OK   e_machine=$m size=$s  $f"
-            else
-              echo "  BAD  e_machine=$m size=$s  $f"
-              bad=1
-            fi
-          done
-          if [ $bad -ne 0 ]; then
-            echo "::error::WB-V39: 有 .ko 不是 AArch64，说明交叉编译变量仍未生效"
-          fi
-          ls -la $GITHUB_WORKSPACE/wlan_out $GITHUB_WORKSPACE/shim_out || true
-
-
-
 
       - name: Pack Process
         uses: ./.github/workflows/pack-process
