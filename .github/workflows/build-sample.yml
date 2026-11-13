@@ -799,6 +799,61 @@ jobs:
                   print("=== fixup: v34 kernel/Makefile already hooked ===")
           else:
               print("=== fixup: v34 kernel/Makefile NOT FOUND ===")
+
+          # ---- v35: make the two panic suspects observable instead ----
+          # Measured with run #45 (v34): the kernel panicked before adbd came
+          # up (device stuck in Qualcomm CrashDump, PID 900E).  Config shows
+          #   PANIC_ON_OOPS=n        -> a plain oops does NOT panic
+          #   PANIC_ON_SSR_NOTIF_TIMEOUT=y  (+ SSR_SUBSYS_NOTIF_TIMEOUT=20000)
+          #   PANIC_TIMEOUT=-1        -> no auto reboot
+          # so something called panic() explicitly. Two candidates:
+          #   1) __stack_chk_fail() below
+          #   2) qca_cld3_wlan.ko (first entry of modules.load) failing init
+          #      -> iCNSS SSR -> subsys_notif 20s timeout -> panic
+          # v35 disarms both as *panic* sources so the box can reach adbd and
+          # leave a dmesg behind.  Wi-Fi logic itself is unchanged.
+          _cfg35 = os.path.join(root,
+                                "arch/arm64/configs/vendor/sm8150-perf_defconfig")
+          if os.path.isfile(_cfg35):
+              _c35 = open(_cfg35, encoding="utf-8", errors="replace").read()
+              _n35 = re.sub(r"^\s*CONFIG_PANIC_ON_SSR_NOTIF_TIMEOUT[ =].*$",
+                            "# CONFIG_PANIC_ON_SSR_NOTIF_TIMEOUT is not set",
+                            _c35, flags=re.M)
+              if _n35 != _c35:
+                  open(_cfg35, "w", encoding="utf-8").write(_n35)
+                  print("=== fixup: v35 PANIC_ON_SSR_NOTIF_TIMEOUT disabled ===")
+              else:
+                  print("=== fixup: v35 PANIC_ON_SSR_NOTIF_TIMEOUT not in defconfig ===")
+          else:
+              print("=== fixup: v35 defconfig not found at %s ===" % _cfg35)
+
+          _kc35 = os.path.join(root, "kernel", "wb_v34_stackprot.c")
+          if os.path.isfile(_kc35):
+              _src35 = (
+                  '/* WB-V34/V35: runtime symbols required by OEM vendor .ko modules.\n'
+                  ' * The kernel is built with CC_STACKPROTECTOR_NONE (a Proton-Clang 13\n'
+                  ' * cc-option workaround), so these are only referenced by external\n'
+                  ' * modules.  WB-V35: do NOT panic() from here -- a panic before adbd\n'
+                  ' * starts leaves the device in Qualcomm CrashDump with no way to read\n'
+                  ' * dmesg.  Emit the diagnostic and let the oops path kill only the\n'
+                  ' * caller (PANIC_ON_OOPS is off), so the system stays inspectable. */\n'
+                  '#include <linux/kernel.h>\n'
+                  '#include <linux/export.h>\n'
+                  '#include <linux/module.h>\n'
+                  '#include <linux/bug.h>\n'
+                  'unsigned long __stack_chk_guard = 0x5a3c7e91b2d04f6dUL;\n'
+                  'EXPORT_SYMBOL(__stack_chk_guard);\n'
+                  'void __stack_chk_fail(void)\n'
+                  '{\n'
+                  '    pr_err("WB-V35 stack-protector: canary mismatch, caller=%pS\\n",\n'
+                  '           __builtin_return_address(0));\n'
+                  '    BUG();\n'
+                  '}\n'
+                  'EXPORT_SYMBOL(__stack_chk_fail);\n')
+              open(_kc35, "w", encoding="utf-8").write(_src35)
+              print("=== fixup: v35 stackprot made non-panicking ===")
+          else:
+              print("=== fixup: v35 wb_v34_stackprot.c NOT FOUND ===")
           # ---- v18: fix LLD "improper alignment for R_AARCH64_LDST32_ABS_LO12_NC" ----
           # 4.14 + Clang/LLD dies linking vmlinux with:
           #   ld.lld: error: ... improper alignment for relocation
