@@ -235,73 +235,111 @@ jobs:
           import os, re
           root = os.getcwd()
 
-          # ================= v44 WBSTACK44 关键修复 =================
-          # v33~v43 在这里把 CONFIG_CC_STACKPROTECTOR_STRONG=y 改成了 NONE，
-          # 理由是「cc-option 探测失败 + stack protector 只是编译期加固」。
-          # 这个判断是错的，代价是整条 vendor 模块链崩塌：
-          #   内核关掉 stack protector → 不再 EXPORT __stack_chk_guard /
-          #   __stack_chk_fail → /vendor/lib/modules 下 30 个用
-          #   -fstack-protector-strong 编的 OEM 模块在 first-stage init 的
-          #   LoadKernelModules() 里全部解析失败（实测只起来 5 个 / 正常 25 个）
-          #   → audio_q6.ko 不在 → ADSP/VOC 链断 →
-          #   msm-pcm-voice probe 恒返回 -517 (-EPROBE_DEFER) →
-          #   ASoC platform 不注册 → 无声卡 → system_server Watchdog 卡死重启。
-          # 原厂 boot_a 的 .config 实测是 CC_STACKPROTECTOR=y + STRONG=y。
-          # 所以这里改为强推，三处一起做。
+          # 4.14 kernel + modern Proton-Clang: the `cc-option` probe for
+          # -fstack-protector-strong fails, aborting prepare-compiler-check
+          # (Makefile:1345).  Stack protector is a compile-time hardening
+          # option only, so switching the choice to NONE keeps every stock
+          # runtime feature intact while letting the build proceed.
           cfg = os.path.join(root, "arch/arm64/configs/vendor/sm8150-perf_defconfig")
           if os.path.isfile(cfg):
               lines = open(cfg, encoding="utf-8", errors="replace").read().splitlines(True)
-              out = []
-              dropped = 0
-              for l in lines:
-                  s = l.strip()
-                  if s.startswith("CONFIG_CC_STACKPROTECTOR"):
-                      dropped += 1
-                      continue
-                  out.append(l if l.endswith("\n") else l + "\n")
-              out.append("CONFIG_CC_STACKPROTECTOR=y\n")
-              out.append("CONFIG_CC_STACKPROTECTOR_STRONG=y\n")
-              open(cfg, "w", encoding="utf-8").writelines(out)
-              print("=== v44 WBSTACK44: defconfig rewritten (dropped %d old, forced STRONG=y) ===" % dropped)
+              n = 0
+              for i, l in enumerate(lines):
+                  if l.strip() == "CONFIG_CC_STACKPROTECTOR_STRONG=y":
+                      lines[i] = "# CONFIG_CC_STACKPROTECTOR_STRONG is not set\n"
+                      n += 1
+              if n:
+                  lines.append("CONFIG_CC_STACKPROTECTOR_NONE=y\n")
+                  open(cfg, "w", encoding="utf-8").writelines(lines)
+              print("=== fixup: CONFIG_CC_STACKPROTECTOR_STRONG disabled: %d ===" % n)
 
-          # Kconfig 里去掉 cc-option 依赖，否则探测失败时选项不可选、
-          # defconfig 的 =y 会被 olddefconfig 丢掉。
-          kidx = 0
-          for kc in ("arch/Kconfig", "security/Kconfig.hardening", "arch/arm64/Kconfig"):
-              p = os.path.join(root, kc)
-              if not os.path.isfile(p):
-                  continue
-              txt = open(p, encoding="utf-8", errors="replace").read()
-              before = txt
-              for pat in ('depends on $(cc-option,-fstack-protector-strong)',
-                          'depends on $(cc-option,-fstack-protector)',
-                          'depends on $(cc-option,-fstack-protector-all)'):
-                  txt = txt.replace(pat, '')
-              if txt != before:
-                  open(p, "w", encoding="utf-8").write(txt)
-                  kidx += 1
-                  print("=== v44 WBSTACK44: removed cc-option dep in %s ===" % kc)
-          if not kidx:
-              print("=== v44 WBSTACK44: no cc-option dep found (ok, may be 4.14 layout) ===")
+          # ================= v45 WBSTACKCHK =================
+          # 【v44 死因回顾】v44 试着真的打开 CONFIG_CC_STACKPROTECTOR_STRONG，
+          # 实测刷入后 adb 230s 不出现、连 USB 都没枚举 → 死在 dwc3 init 之前。
+          # 所以 v45 绝不碰这个选项，内核完全按 v33/v41 的配置编（NONE）。
+          #
+          # 【矛盾点】CONFIG 关掉后内核不再导出 __stack_chk_guard /
+          # __stack_chk_fail，而 /vendor/lib/modules/*.ko 全部由
+          # -fstack-protector-strong 编过，414 个未定义符号里恰好只缺这 2 个
+          # （其余 412 个含 __icnss_register_driver 全部命中）。
+          # 缺符号 → first-stage init LoadKernelModules() 只能载 5 个模块
+          # → 无 boot_adsp → ADSP 永 OFFLINING → voice 恒 -517 → 无声卡。
+          #
+          # 【v45 做法】把这 2 个符号做成 vmlinux 内置，语义完全照抄已经实测
+          # 稳定的外挂 stackchk_shim.ko：稳定非零 canary + 失败只打印不 panic。
+          # 内置后 first-stage init 一开始就能解析 OEM 模块，不需要任何 shim 模块。
 
-          # Makefile 兜底：探测成功时 stackp-flag 才有值；这里无条件补上，
-          # 保证即使 cc-option 探测失败也真的用 -fstack-protector-strong 编译。
-          mkp = os.path.join(root, "Makefile")
+          # --- A. 内置符号提供者 ---
+          srcp = os.path.join(root, "arch/arm64/kernel/wb_stackchk.c")
+          src = (
+              "/* v45 WBSTACKCHK: stack-protector symbols for OEM vendor modules.\n"
+              " *\n"
+              " * Built-in equivalent of the externally loaded stackchk_shim.ko that we\n"
+              " * verified on this device (wlan0 came up, 25 modules loaded).\n"
+              " * Semantics are copied verbatim from it on purpose:\n"
+              " *   - a stable, non-zero canary that never changes at runtime;\n"
+              " *   - __stack_chk_fail only complains + dump_stack(), it must NEVER\n"
+              " *     panic (v34/v35/v36 all died from a panicking variant).\n"
+              " *\n"
+              " * Guarded by #ifndef so that it disappears if the kernel is ever built\n"
+              " * with CONFIG_CC_STACKPROTECTOR again (stackprotector.c would collide).\n"
+              " */\n"
+              "#include <linux/kernel.h>\n"
+              "#include <linux/export.h>\n"
+              "#include <linux/kconfig.h>\n"
+              "\n"
+              "#ifndef CONFIG_CC_STACKPROTECTOR\n"
+              "\n"
+              "/* explicit so this file builds regardless of which header declares it */\n"
+              "extern void dump_stack(void);\n"
+              "\n"
+              "unsigned long __stack_chk_guard = 0x2f3a9c1e5b7d4068UL;\n"
+              "EXPORT_SYMBOL(__stack_chk_guard);\n"
+              "\n"
+              "void __stack_chk_fail(void)\n"
+              "{\n"
+              "\tpr_err(\"WB45STACKCHK: stack canary corrupted (not panicking)\\n\");\n"
+              "\tdump_stack();\n"
+              "}\n"
+              "EXPORT_SYMBOL(__stack_chk_fail);\n"
+              "\n"
+              "#else\n"
+              "static const char wb45_unused_tag[] __attribute__((unused)) = \"WB45STACKCHK\";\n"
+              "\n"
+              "#endif /* !CONFIG_CC_STACKPROTECTOR */\n"
+          )
+          open(srcp, "w", encoding="utf-8").write(src)
+          print("=== v45 WBSTACKCHK: wrote arch/arm64/kernel/wb_stackchk.c ===")
+
+          mkp = os.path.join(root, "arch/arm64/kernel/Makefile")
           if os.path.isfile(mkp):
               mtxt = open(mkp, encoding="utf-8", errors="replace").read()
-              if "WBSTACK44" not in mtxt:
-                  mtxt += (
-                      "\n# v44 WBSTACK44: force stack-protector-strong so that\n"
-                      "# __stack_chk_guard/__stack_chk_fail get defined and exported,\n"
-                      "# which every OEM vendor module links against.\n"
-                      "KBUILD_CFLAGS := $(filter-out -fno-stack-protector,$(KBUILD_CFLAGS))\n"
-                      "KBUILD_CFLAGS += -fstack-protector-strong\n"
-                  )
+              if "wb_stackchk" not in mtxt:
+                  if not mtxt.endswith("\n"):
+                      mtxt += "\n"
+                  mtxt += "# v45 WBSTACKCHK\nobj-y += wb_stackchk.o\n"
                   open(mkp, "w", encoding="utf-8").write(mtxt)
-                  print("=== v44 WBSTACK44: Makefile forced -fstack-protector-strong ===")
+                  print("=== v45 WBSTACKCHK: hooked into arch/arm64/kernel/Makefile ===")
               else:
-                  print("=== v44 WBSTACK44: Makefile already patched ===")
-          # =============== v44 WBSTACK44 修复结束 ===============
+                  print("=== v45 WBSTACKCHK: Makefile already hooked ===")
+          else:
+              print("=== v45 WBSTACKCHK: WARN Makefile not found ===")
+
+          # --- B. panic 后能 warm reboot 留 ramoops ---
+          # 原设定 CONFIG_PANIC_TIMEOUT=-1 + QCOM_FORCE_WDOG_BITE_ON_PANIC=y
+          # 会让 panic 直接硬断电，DRAM 与 ramoops 一起丢，事后完全无日志。
+          # 改成 15s + 关 watchdog bite，内核才会自己重启并留下现场。
+          p = os.path.join(root, "arch/arm64/configs/vendor/sm8150-perf_defconfig")
+          if os.path.isfile(p):
+              txt = open(p, encoding="utf-8", errors="replace").read()
+              lines = [l for l in txt.splitlines(True)
+                       if not l.strip().startswith("CONFIG_PANIC_TIMEOUT=")
+                       and not l.strip().startswith("CONFIG_QCOM_FORCE_WDOG_BITE_ON_PANIC")]
+              lines.append("CONFIG_PANIC_TIMEOUT=15\n")
+              lines.append("# CONFIG_QCOM_FORCE_WDOG_BITE_ON_PANIC is not set\n")
+              open(p, "w", encoding="utf-8").writelines(lines)
+              print("=== v45 WBSTACKCHK: PANIC_TIMEOUT=15, WDOG_BITE disabled ===")
+          # =============== v45 WBSTACKCHK 结束 ===============
 
           # clang-13 (Proton-Clang) vs the stock 4.14 OnePlus Makefile:
           # Makefile:1003-1015 promotes five legacy warnings to hard errors via
