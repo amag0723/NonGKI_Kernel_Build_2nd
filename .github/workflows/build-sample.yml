@@ -172,6 +172,37 @@ jobs:
               print("    ", f, "->", t)
           PYFIXLINKS
 
+      # ==== WB-V48: qcacld WLAN 编进内核（抄 Kirisakura v2.2 的配置）====
+      # 依据：DurkaEbanaya/kirisakura-ksu-op7pro kernel.config 里
+      #   CONFIG_QCA_CLD_WLAN=y / QCA_CLD_WLAN_PROFILE="default"
+      # 在 guacamole + SM8150 上 root/FOD/Wi-Fi 全通。内建后 Wi-Fi 不再需要
+      # vendor 的 qca_cld3_wlan.ko，也就绕开了 __stack_chk_guard shim +
+      # modprobe 整条链——那正是 B 槽三次翻车的地方。
+      # OOS12 把驱动放在 vendor 仓库，而 qcacld Kbuild 只有位于
+      # drivers/staging/qcacld-3.0（同级 qca-wifi-host-cmn / fw-api）时才走
+      # KERNEL_BUILD=y 分支，所以这里搬进去并接线。
+      - name: In-tree qcacld WLAN
+        run: |
+          set -e
+          cd $GITHUB_WORKSPACE/device_kernel
+          SRC=vendor/qcom/opensource/wlan
+          for d in qcacld-3.0 qca-wifi-host-cmn fw-api; do
+            [ -d "$SRC/$d" ] || { echo "ABORT: $SRC/$d missing"; exit 1; }
+          done
+          rm -rf drivers/staging/qcacld-3.0 drivers/staging/qca-wifi-host-cmn drivers/staging/fw-api
+          cp -a "$SRC/qcacld-3.0"        drivers/staging/
+          cp -a "$SRC/qca-wifi-host-cmn" drivers/staging/
+          cp -a "$SRC/fw-api"            drivers/staging/
+          grep -q 'qcacld-3.0/Kconfig' drivers/staging/Kconfig || \
+            printf '\nsource "drivers/staging/qcacld-3.0/Kconfig"\n' >> drivers/staging/Kconfig
+          grep -q 'qcacld-3.0/' drivers/staging/Makefile || \
+            printf '\nobj-$(CONFIG_QCA_CLD_WLAN) += qcacld-3.0/\n' >> drivers/staging/Makefile
+          echo "[+] qcacld in-tree files: $(find drivers/staging/qcacld-3.0 -type f | wc -l)"
+          echo "[+] common files          : $(find drivers/staging/qca-wifi-host-cmn -type f | wc -l)"
+          echo "[+] fw-api files          : $(find drivers/staging/fw-api -type f | wc -l)"
+          echo "[+] Kconfig tail : $(tail -1 drivers/staging/Kconfig)"
+          echo "[+] Makefile tail: $(tail -1 drivers/staging/Makefile)"
+
       - name: Patch Kernel of SUSFS
         uses: ./.github/workflows/patch-susfs
 
@@ -1676,7 +1707,7 @@ jobs:
           print("=== diagnostics: Makefile obj- dirs absent: %d ===" % len(missing_obj))
           for p, d in missing_obj[:80]:
               print("    ", p, "->", d)
-          # ==== WB-V47: v41 full config + 2 panic-visibility fixes ====
+          # ==== WB-V48: v47 config + qcacld WLAN built in ====
           # Overwrites the defconfig AFTER every legacy fixup.
           import base64 as _b47
           _v47_parts = [
@@ -3951,12 +3982,12 @@ jobs:
               'IHNldAojIENPTkZJR19JUlFfUE9MTCBpcyBub3Qgc2V0CkNPTkZJR19NUElMSUI9eQpDT05GSUdfTElCRkRUPXkKQ09ORklHX09J',
               'RF9SRUdJU1RSWT15CiMgQ09ORklHX1NHX1NQTElUIGlzIG5vdCBzZXQKQ09ORklHX1NHX1BPT0w9eQpDT05GSUdfQVJDSF9IQVNf',
               'U0dfQ0hBSU49eQpDT05GSUdfU1RBQ0tERVBPVD15CkNPTkZJR19TVEFDS19IQVNIX09SREVSX1NISUZUPTEyCkNPTkZJR19TQklU',
-              'TUFQPXkKIyBDT05GSUdfU1RSSU5HX1NFTEZURVNUIGlzIG5vdCBzZXQK',
+              'TUFQPXkKIyBDT05GSUdfU1RSSU5HX1NFTEZURVNUIGlzIG5vdCBzZXQKQ09ORklHX1FDQV9DTERfV0xBTj15Cg==',
           ]
           _v47_txt = _b47.b64decode(''.join(_v47_parts)).decode('utf-8')
           _v47_def = os.path.join(root, 'arch/arm64/configs/vendor/sm8150-perf_defconfig')
           open(_v47_def, 'w', encoding='utf-8', newline='\n').write(_v47_txt)
-          print('=== fixup: WB-V47 defconfig replaced (%d bytes, 2 panic fixes) ===' % len(_v47_txt))
+          print('=== fixup: WB-V48 defconfig replaced (%d bytes, QCA_CLD_WLAN=y) ===' % len(_v47_txt))
           PYSELFHEAL
       - name: Patch Kernel of Re:Kernel
         uses: ./.github/workflows/patch-rekernel
