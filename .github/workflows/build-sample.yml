@@ -1710,6 +1710,55 @@ jobs:
           open(_cfg49, 'w', encoding='utf-8', newline='\n').write(
               '\n'.join(_keep49) + '\n')
           print('=== fixup: WB-V49 diag applied (%d options) ===' % len(_want49))
+          # ==== WB-V50: MODGATE —— 5.9s 那波 *_dlkm 延后到 12s 之后 ====
+          import os as _os50
+          _p50 = _os50.path.join(root, 'kernel/module.c')
+          if not _os50.path.isfile(_p50):
+              raise SystemExit('WB-V50 FATAL: kernel/module.c not found')
+          _src50 = open(_p50, encoding='utf-8', errors='replace').read()
+          if 'WB50_MODGATE' in _src50:
+              print('=== fixup: WB-V50 already applied, skip ===')
+          else:
+              if '#include <linux/ktime.h>' not in _src50:
+                  _i50 = _src50.find('#include <linux/')
+                  if _i50 < 0:
+                      raise SystemExit('WB-V50 FATAL: no #include <linux/...> in module.c')
+                  _src50 = (_src50[:_i50] + '#include <linux/ktime.h>\n'
+                            + _src50[_i50:])
+              _gate50 = (
+                  '/* WB50_MODGATE: first-stage 上下文里 vendor *_dlkm 模块会挂死内核;\n'
+                  ' * 在 ADSP/PIL 就绪前一律 -EAGAIN, 交给 userspace 延后补装。\n'
+                  ' * wlan 不以 _dlkm 结尾且更晚加载, 不受影响。 */\n'
+                  'static int wb50_should_defer(struct module *m, long long ms)\n'
+                  '{\n'
+                  '\tif (ms >= 12000)\n'
+                  '\t\treturn 0;\n'
+                  '\tif (!m || !m->name[0])\n'
+                  '\t\treturn 0;\n'
+                  '\tif (!strstr(m->name, "_dlkm"))\n'
+                  '\t\treturn 0;\n'
+                  '\tpr_warn("MODGATE: defer %s at %lldms\\n", m->name, ms);\n'
+                  '\treturn 1;\n'
+                  '}\n'
+              )
+              _lm50 = 'static int load_module(struct load_info *info, const char __user *uargs,'
+              if _lm50 not in _src50:
+                  raise SystemExit('WB-V50 FATAL: load_module anchor not found')
+              _src50 = _src50.replace(_lm50, _gate50 + '\n' + _lm50, 1)
+              _anc50 = 'err = setup_load_info(info, flags);\n\tif (err < 0)\n\t\tgoto free_copy;\n'
+              if _anc50 not in _src50:
+                  raise SystemExit('WB-V50 FATAL: setup_load_info anchor not found')
+              if '\nfree_copy:\n' in _src50:
+                  _exit50 = '\t\t\terr = -EAGAIN;\n\t\t\tgoto free_copy;\n'
+              else:
+                  print('=== WB-V50 WARN: free_copy label missing, using vfree ===')
+                  _exit50 = '\t\t\tvfree(info->hdr);\n\t\t\treturn -EAGAIN;\n'
+              _call50 = ('\n\tif (wb50_should_defer(info->mod,\n'
+                         '\t\t\t (long long)ktime_to_ms(ktime_get_boottime()))) {\n'
+                         + _exit50 + '\t}\n')
+              _src50 = _src50.replace(_anc50, _anc50 + _call50, 1)
+              open(_p50, 'w', encoding='utf-8', newline='\n').write(_src50)
+              print('=== fixup: WB-V50 MODGATE applied (gate=12000ms, match=_dlkm) ===')
           PYSELFHEAL
       - name: Patch Kernel of Re:Kernel
         uses: ./.github/workflows/patch-rekernel
