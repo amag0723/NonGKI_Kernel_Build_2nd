@@ -1729,33 +1729,30 @@ jobs:
                   '/* WB50_MODGATE: first-stage 上下文里 vendor *_dlkm 模块会挂死内核;\n'
                   ' * 在 ADSP/PIL 就绪前一律 -EAGAIN, 交给 userspace 延后补装。\n'
                   ' * wlan 不以 _dlkm 结尾且更晚加载, 不受影响。 */\n'
-                  'static int wb50_should_defer(struct module *m, long long ms)\n'
+                  'static int wb50_should_defer(const char *name, long long ms)\n'
                   '{\n'
                   '\tif (ms >= 12000)\n'
                   '\t\treturn 0;\n'
-                  '\tif (!m || !m->name[0])\n'
+                  '\tif (!name || !name[0])\n'
                   '\t\treturn 0;\n'
-                  '\tif (!strstr(m->name, "_dlkm"))\n'
+                  '\tif (!strstr(name, "_dlkm"))\n'
                   '\t\treturn 0;\n'
-                  '\tpr_warn("MODGATE: defer %s at %lldms\\n", m->name, ms);\n'
+                  '\tpr_warn("MODGATE: defer %s at %lldms\\n", name, ms);\n'
                   '\treturn 1;\n'
                   '}\n'
               )
-              _lm50 = 'static int load_module(struct load_info *info, const char __user *uargs,'
+              _lm50 = 'static struct module *layout_and_allocate(struct load_info *info, int flags)'
               if _lm50 not in _src50:
-                  raise SystemExit('WB-V50 FATAL: load_module anchor not found')
+                  raise SystemExit('WB-V50 FATAL: layout_and_allocate anchor not found')
               _src50 = _src50.replace(_lm50, _gate50 + '\n' + _lm50, 1)
-              _anc50 = 'err = setup_load_info(info, flags);\n\tif (err < 0)\n\t\tgoto free_copy;\n'
+              _anc50 = ('\tmod = setup_load_info(info, flags);\n'
+                        '\tif (IS_ERR(mod))\n'
+                        '\t\treturn mod;\n')
               if _anc50 not in _src50:
                   raise SystemExit('WB-V50 FATAL: setup_load_info anchor not found')
-              if '\nfree_copy:\n' in _src50:
-                  _exit50 = '\t\t\terr = -EAGAIN;\n\t\t\tgoto free_copy;\n'
-              else:
-                  print('=== WB-V50 WARN: free_copy label missing, using vfree ===')
-                  _exit50 = '\t\t\tvfree(info->hdr);\n\t\t\treturn -EAGAIN;\n'
-              _call50 = ('\n\tif (wb50_should_defer(info->mod,\n'
-                         '\t\t\t (long long)ktime_to_ms(ktime_get_boottime()))) {\n'
-                         + _exit50 + '\t}\n')
+              _call50 = ('\n\tif (wb50_should_defer(info->name,\n'
+                         '\t\t\t (long long)ktime_to_ms(ktime_get_boottime())))\n'
+                         '\t\treturn ERR_PTR(-EAGAIN);\n')
               _src50 = _src50.replace(_anc50, _anc50 + _call50, 1)
               open(_p50, 'w', encoding='utf-8', newline='\n').write(_src50)
               print('=== fixup: WB-V50 MODGATE applied (gate=12000ms, match=_dlkm) ===')
