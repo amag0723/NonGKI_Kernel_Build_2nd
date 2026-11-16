@@ -1731,7 +1731,7 @@ jobs:
                   ' * wlan 不以 _dlkm 结尾且更晚加载, 不受影响。 */\n'
                   'static int wb50_should_defer(const char *name, long long ms)\n'
                   '{\n'
-                  '\tif (ms >= 12000)\n'
+                  '\tif (ms >= 8000)\n'
                   '\t\treturn 0;\n'
                   '\tif (!name || !name[0])\n'
                   '\t\treturn 0;\n'
@@ -1755,7 +1755,51 @@ jobs:
                          '\t\treturn ERR_PTR(-EAGAIN);\n')
               _src50 = _src50.replace(_anc50, _anc50 + _call50, 1)
               open(_p50, 'w', encoding='utf-8', newline='\n').write(_src50)
-              print('=== fixup: WB-V50 MODGATE applied (gate=12000ms, match=_dlkm) ===')
+              print('=== fixup: WB-V50 MODGATE applied (gate=8000ms, match=_dlkm) ===')
+          # ==== WB-V51: 主动 of_platform_populate qcom,msm-audio-apr ====
+          # ★ 真实 drivers/of/platform.c 的 include 里没有 <linux/init.h>，
+          #   整个文件 0 处 late_initcall —— 必须先把 init.h 补上，否则编译报
+          #   'late_initcall' undeclared。已对 of_platform_upstream.c（705 行）自测。
+          import os as _os51
+          _p51 = _os51.path.join(root, 'drivers/of/platform.c')
+          if not _os51.path.isfile(_p51):
+              raise SystemExit('WB-V51 FATAL: drivers/of/platform.c not found')
+          _src51 = open(_p51, encoding='utf-8', errors='replace').read()
+          if 'WB51_AUDIO_POPULATE' in _src51:
+              print('=== fixup: WB-V51 already applied, skip ===')
+          else:
+              _inc51 = '#include <linux/of_platform.h>'
+              if _inc51 not in _src51:
+                  raise SystemExit('WB-V51 FATAL: of_platform.h include anchor not found')
+              if '#include <linux/init.h>' not in _src51:
+                  _src51 = _src51.replace(
+                      _inc51, _inc51 + '\n#include <linux/init.h>', 1)
+              _blk51 = (
+                  '\n/* WB51_AUDIO_POPULATE: OEM audio_apr 的 probe 在某些启动时序下\n'
+                  ' * 没有调 of_platform_populate, 于是 qcom,msm-audio-apr 的子节点\n'
+                  ' * (sound-tavil / qcom,msm-audio-ion) 从不实例化 -> machine driver\n'
+                  ' * (sm8150-asoc-snd) 没有 device 可 bind -> 无 soundcard ->\n'
+                  ' * audioserver TimeCheck 超时自杀 -> init critical 计数满 -> reboot。\n'
+                  ' * 这里无条件先建出来; 若 apr 也 populate, 重复创建只会 -EEXIST。 */\n'
+                  '#ifdef CONFIG_OF\n'
+                  'static int __init wb51_audio_populate(void)\n'
+                  '{\n'
+                  '\tstruct device_node *np;\n'
+                  '\n'
+                  '\tnp = of_find_node_by_path("/soc/qcom,msm-audio-apr");\n'
+                  '\tif (!np)\n'
+                  '\t\treturn 0;\n'
+                  '\tof_platform_populate(np, NULL, NULL, NULL);\n'
+                  '\tof_node_put(np);\n'
+                  '\tpr_info("WB51: populated qcom,msm-audio-apr children\\n");\n'
+                  '\treturn 0;\n'
+                  '}\n'
+                  'late_initcall(wb51_audio_populate);\n'
+                  '#endif /* CONFIG_OF */\n'
+              )
+              _src51 = _src51.rstrip('\n') + '\n' + _blk51
+              open(_p51, 'w', encoding='utf-8', newline='\n').write(_src51)
+              print('=== fixup: WB-V51 audio populate applied ===')
           PYSELFHEAL
       - name: Patch Kernel of Re:Kernel
         uses: ./.github/workflows/patch-rekernel
