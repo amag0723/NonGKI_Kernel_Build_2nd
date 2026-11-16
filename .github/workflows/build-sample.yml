@@ -1731,7 +1731,7 @@ jobs:
                   ' * wlan 不以 _dlkm 结尾且更晚加载, 不受影响。 */\n'
                   'static int wb50_should_defer(const char *name, long long ms)\n'
                   '{\n'
-                  '\tif (ms >= 8000)\n'
+                  '\tif (ms >= 12000)\n'
                   '\t\treturn 0;\n'
                   '\tif (!name || !name[0])\n'
                   '\t\treturn 0;\n'
@@ -1755,7 +1755,7 @@ jobs:
                          '\t\treturn ERR_PTR(-EAGAIN);\n')
               _src50 = _src50.replace(_anc50, _anc50 + _call50, 1)
               open(_p50, 'w', encoding='utf-8', newline='\n').write(_src50)
-              print('=== fixup: WB-V50 MODGATE applied (gate=8000ms, match=_dlkm) ===')
+              print('=== fixup: WB-V50 MODGATE applied (gate=12000ms, match=_dlkm) ===')
           # ==== WB-V51: 主动 of_platform_populate qcom,msm-audio-apr ====
           # ★ 真实 drivers/of/platform.c 的 include 里没有 <linux/init.h>，
           #   整个文件 0 处 late_initcall —— 必须先把 init.h 补上，否则编译报
