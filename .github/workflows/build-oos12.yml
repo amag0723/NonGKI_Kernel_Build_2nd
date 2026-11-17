@@ -46,7 +46,7 @@ jobs:
           echo "--- 关键目录 ---"
           ls -d k/vendor/qcom k/vendor/oplus k/techpack 2>&1
           ls k/arch/arm64/configs/vendor/sm8150-perf_defconfig
-          echo "Kconfig source 总数: $(grep -rhcE '^\s*(r?source|osource)\s+"' k --include=Kconfig | awk '{s+=$1}END{print s}')"
+          echo "Kconfig source 总数: $(grep -rhcE '^\s*(r?source|osource)\s+' k --include=Kconfig | awk '{s+=$1}END{print s}')"
           du -sh k
 
       - name: 3. 工具链（Proton-Clang）
@@ -115,12 +115,17 @@ jobs:
                   continue
               out, hit = [], 0
               for ln in lines:
-                  m = re.match(r'^(\s*)(source|rsource|osource)\s+"([^"]+)"', ln)
-                  if m and not source_ok(m.group(3)):
-                      out.append("# [S1FIX] " + ln); hit += 1
-                      skipped.append(os.path.normpath(os.path.join(KR, m.group(3))))
-                  else:
-                      out.append(ln)
+                  # Kconfig source 支持带引号与不带引号两种写法：
+                  #   source "block/foo/Kconfig"
+                  #   source block/oplus_foreground_io_opt/Kconfig   <- 官方树就是这种
+                  m = re.match(r'^(\s*)(source|rsource|osource)\s+(?:"([^"]+)"|(\S+))\s*$', ln)
+                  if m:
+                      rel = m.group(3) if m.group(3) is not None else m.group(4)
+                      if not source_ok(rel):
+                          out.append("# [S1FIX] " + ln); hit += 1
+                          skipped.append(os.path.normpath(os.path.join(KR, rel)))
+                          continue
+                  out.append(ln)
               if hit:
                   open(p, "w", encoding="utf-8", newline="\n").write("".join(out))
                   fixed_k.append((p, hit))
