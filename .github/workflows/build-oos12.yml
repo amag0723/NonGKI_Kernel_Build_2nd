@@ -1,13 +1,16 @@
 name: oos12-s1
 
 # S1 目标：用 OnePlus 官方 OOS12 源码（oneplus/sm8150_s_12.1_op7pro）重建内核，
-# 只改两项必需 config（MODULE_SIG_FORCE / MODVERSIONS），其余照原厂，
-# 只编 Image（模块用 OEM 的 /vendor/lib/modules，不自己编）。
+# 只改两项必需 config（MODULE_SIG_FORCE / MODVERSIONS），其余照原厂，只编 Image。
 #
-# 为什么：ADSP bring-up 在原厂树上本来是好的，之前 6 次挂死全是「模板树 baseline 不匹配」。
-# 本 workflow 只做一件事：把原厂树编出 Image，验证 ADSP/声卡是否正常。
-#
-# 触发：push 到分支 oos12（本文件只存在于 oos12 分支，因此不会触发 build-sample.yml）
+# v2 修复（2026-11-17）：
+#   - step4 S1FIX 曾以「Kconfig 文件所在目录」为 base 判 source 存在与否，
+#     而 Linux Kconfig 的 source 路径是相对内核根(srctree)的 → 误注释 260 个
+#     Kconfig / 2024 行（含 arch/$SRCARCH/Kconfig 入口）→ .config 只剩 2 行 →
+#     CONFIG_HZ 空 → timeconst 用 bc 等待 stdin → 91 分钟挂死。
+#     现在改为：只遍历 k/、base=k/、跳过含 $ 或绝对路径、只注释确实缺失的静态路径。
+#   - step5 加硬门禁：.config 必须 >=1000 行且含 CONFIG_HZ/CONFIG_MODULES，否则立即失败。
+#   - step6 加 timeout/stdbuf/</dev/null，杜绝任何读 stdin 卡死与无限等待。
 
 on:
   push:
@@ -43,6 +46,7 @@ jobs:
           echo "--- 关键目录 ---"
           ls -d k/vendor/qcom k/vendor/oplus k/techpack 2>&1
           ls k/arch/arm64/configs/vendor/sm8150-perf_defconfig
+          echo "Kconfig source 总数: $(grep -rhcE '^\s*(r?source|osource)\s+"' k --include=Kconfig | awk '{s+=$1}END{print s}')"
           du -sh k
 
       - name: 3. 工具链（Proton-Clang）
@@ -55,13 +59,10 @@ jobs:
       - name: 3b. as 分派器（Proton-Clang 自带 as 是 host x86，遇 -EL 直接报错）
         run: |
           python3 - <<'PYASW'
-          import os, shutil, stat
+          import os, shutil
           cb = os.path.join(os.getcwd(), "tc", "bin")
           host_as = os.path.join(cb, "as")
           backup = os.path.join(cb, "as.host")
-          cross_dir = os.path.join(cb, "aarch64-linux-gnu-as")
-          print("cb =", cb)
-          print("as exists =", os.path.isfile(host_as), " aarch64-as in cb =", os.path.isfile(cross_dir))
           if os.path.isfile(host_as) and not os.path.exists(backup):
               shutil.copy2(host_as, backup)
               script = (
@@ -70,12 +71,8 @@ jobs:
                   'for a in "$@"; do\n'
                   '  case "$a" in\n'
                   '    -EL|-EB)\n'
-                  '      if [ -x "$HERE/aarch64-linux-gnu-as" ]; then\n'
-                  '        exec "$HERE/aarch64-linux-gnu-as" "$@"\n'
-                  '      fi\n'
-                  '      if [ -x /usr/bin/aarch64-linux-gnu-as ]; then\n'
-                  '        exec /usr/bin/aarch64-linux-gnu-as "$@"\n'
-                  '      fi\n'
+                  '      if [ -x "$HERE/aarch64-linux-gnu-as" ]; then exec "$HERE/aarch64-linux-gnu-as" "$@"; fi\n'
+                  '      if [ -x /usr/bin/aarch64-linux-gnu-as ]; then exec /usr/bin/aarch64-linux-gnu-as "$@"; fi\n'
                   '      ;;\n'
                   '  esac\n'
                   'done\n'
@@ -84,34 +81,32 @@ jobs:
               with open(host_as, "w", encoding="utf-8", newline="\n") as f:
                   f.write(script)
               os.chmod(host_as, 0o755)
-              print("=== as dispatcher installed (host=as.host, arm64=/usr/bin/aarch64-linux-gnu-as) ===")
+              print("as dispatcher installed")
           else:
-              print("=== as dispatcher skipped ===")
-          # 确认系统 aarch64 as 可用
+              print("as dispatcher skipped")
           print("system cross as:", os.path.exists("/usr/bin/aarch64-linux-gnu-as"))
           PYASW
           /usr/bin/aarch64-linux-gnu-as --version | head -1
 
-      - name: 4. 完整性修复（官方发布缺目录，自动注释引用）
+      - name: 4. 完整性修复（精准版：base=内核根 k/，只注释确实缺失的静态 source）
         run: |
           python3 - <<'PYEOF'
           import os, re
 
-          ROOT = "."
-          skipped = []
-          fixed_k = []
-          fixed_m = []
+          KR = "k"   # 内核源码根；Kconfig 的 source 路径相对它解析
+          fixed_k, fixed_m, skipped = [], [], []
 
-          def skip(dp):
-              d = dp.replace(os.sep, "/") + "/"
-              return ("/out/" in d) or ("/.git/" in d)
+          def source_ok(rel):
+              # 含变量 / 绝对路径：绝不判定为缺失
+              if rel.startswith("/") or "$" in rel or "(" in rel:
+                  return True
+              return os.path.exists(os.path.normpath(os.path.join(KR, rel)))
 
-          def rel_ok(base, rel):
-              return os.path.exists(os.path.normpath(os.path.join(base, rel)))
-
-          # 1) Kconfig: source "xxx" 指向不存在的文件
-          for dp, dn, fn in os.walk(ROOT):
-              if skip(dp) or "Kconfig" not in fn:
+          # 1) 只遍历内核树 k/ 的 Kconfig
+          for dp, dn, fn in os.walk(KR):
+              if "/.git" in dp or dp.startswith(".git"):
+                  continue
+              if "Kconfig" not in fn:
                   continue
               p = os.path.join(dp, "Kconfig")
               try:
@@ -121,18 +116,18 @@ jobs:
               out, hit = [], 0
               for ln in lines:
                   m = re.match(r'^(\s*)(source|rsource|osource)\s+"([^"]+)"', ln)
-                  if m and not m.group(3).startswith(("/", "$")):
-                      if not rel_ok(dp, m.group(3)):
-                          skipped.append(os.path.normpath(os.path.join(dp, m.group(3))))
-                          out.append("# [S1FIX] " + ln); hit += 1; continue
-                  out.append(ln)
+                  if m and not source_ok(m.group(3)):
+                      out.append("# [S1FIX] " + ln); hit += 1
+                      skipped.append(os.path.normpath(os.path.join(KR, m.group(3))))
+                  else:
+                      out.append(ln)
               if hit:
                   open(p, "w", encoding="utf-8", newline="\n").write("".join(out))
                   fixed_k.append((p, hit))
 
-          # 2) Makefile: obj-y += dir/ 指向不存在的目录
-          for dp, dn, fn in os.walk(ROOT):
-              if skip(dp):
+          # 2) Makefile: obj-y += dir/ 指向确实缺失的目录（同样 base=k/）
+          for dp, dn, fn in os.walk(KR):
+              if "/.git" in dp or dp.startswith(".git"):
                   continue
               for f in ("Makefile", "Kbuild"):
                   if f not in fn:
@@ -145,48 +140,62 @@ jobs:
                   out, hit = [], 0
                   for ln in lines:
                       m = re.match(r'^(\s*)obj-y\s*\+?=\s*([A-Za-z0-9_./-]+)/\s*$', ln)
-                      if m and not rel_ok(dp, m.group(2)):
-                          skipped.append(os.path.normpath(os.path.join(dp, m.group(2))))
-                          out.append("# [S1FIX] " + ln); hit += 1; continue
+                      if m:
+                          rel = os.path.relpath(dp, KR)
+                          target = os.path.normpath(os.path.join(rel, m.group(2)))
+                          if not os.path.isdir(os.path.join(KR, target)):
+                              out.append("# [S1FIX] " + ln); hit += 1
+                              skipped.append(os.path.join(KR, target))
+                              continue
                       out.append(ln)
                   if hit:
                       open(p, "w", encoding="utf-8", newline="\n").write("".join(out))
                       fixed_m.append((p, hit))
 
-          print("=== S1FIX: Kconfig 文件改动 %d 个，Makefile 改动 %d 个 ===" % (len(fixed_k), len(fixed_m)))
+          print("=== S1FIX Kconfig 改动 %d 文件, Makefile 改动 %d 文件 ===" % (len(fixed_k), len(fixed_m)))
           for p, n in fixed_k:
               print("   K %s (%d)" % (p, n))
           for p, n in fixed_m:
               print("   M %s (%d)" % (p, n))
-          print("=== 被注释掉的缺失路径（去重 %d 个）===" % len(set(skipped)))
+          print("=== 缺失路径（去重 %d）===" % len(set(skipped)))
           for s in sorted(set(skipped)):
               print("   " + s)
+          # 硬门禁：绝不允许再出现 260 文件 / 2024 行那种灾难
+          total_lines = sum(n for _, n in fixed_k)
+          print("S1FIX_TOTAL_KCONFIG_LINES=%d" % total_lines)
+          if total_lines > 40:
+              raise SystemExit("ABORT: S1FIX 注释了 %d 行 Kconfig source，超过 40 行安全阈值，判定 base 逻辑有误" % total_lines)
           PYEOF
 
-      - name: 5. defconfig + 只改两项
+      - name: 5. defconfig + 只改两项 + 硬门禁
         run: |
           set -e
           export PATH=$PWD/tc/bin:$PATH
           cd k
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- vendor/sm8150-perf_defconfig
-          echo "=== defconfig 后 ==="
-          grep -E 'CONFIG_MODULE_SIG_FORCE|CONFIG_MODVERSIONS|CONFIG_LOCALVERSION=|CONFIG_MODULE_SIG=' out/.config || echo '   (defconfig 里没有这些项)'
           scripts/config --file out/.config -d MODULE_SIG_FORCE -d MODVERSIONS
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-          echo "=== 改完（应看到 SIG_FORCE 与 MODVERSIONS 都不 set）==="
-          grep -E 'CONFIG_MODULE_SIG_FORCE|CONFIG_MODVERSIONS|CONFIG_LOCALVERSION=|CONFIG_MODULE_SIG=' out/.config || echo '   (defconfig 里没有这些项)'
-          grep -cE '^CONFIG_' out/.config || true
+          echo "=== 配置核验 ==="
+          N=$(grep -cE '^CONFIG_' out/.config || true)
+          echo "CONFIG 行数 = $N"
+          head -5 out/.config
+          grep -E 'CONFIG_HZ=|CONFIG_MODULES=|CONFIG_MODULE_SIG_FORCE|CONFIG_MODVERSIONS' out/.config || true
+          # 硬门禁：坏 config 立即失败，不再空等 91 分钟
+          test "$N" -ge 1000 || { echo "ABORT: .config 只有 $N 行 (<1000)，Kconfig 树仍被破坏"; exit 1; }
+          grep -qE '^CONFIG_HZ=[0-9]+$' out/.config || { echo "ABORT: CONFIG_HZ 未定义，timeconst 会挂 bc"; exit 1; }
+          grep -qE '^CONFIG_MODULES=y$' out/.config || { echo "ABORT: CONFIG_MODULES 未定义"; exit 1; }
 
-      - name: 6. 编 Image
+      - name: 6. 编 Image（timeout + 行缓冲 + 关闭 stdin）
         run: |
           set -e -o pipefail
           export PATH=$PWD/tc/bin:$PATH
           cd k
-          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-               CROSS_COMPILE=aarch64-linux-gnu- LD=ld.lld \
-               KCFLAGS="-Wno-error" -j$(nproc) Image 2>&1 | tee ../build.log
+          timeout 2400s stdbuf -oL -eL \
+            make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+                 CROSS_COMPILE=aarch64-linux-gnu- LD=ld.lld \
+                 KCFLAGS="-Wno-error" -j$(nproc) Image </dev/null 2>&1 | tee ../build.log
           echo "=== 产物 ==="
           ls -la out/arch/arm64/boot/Image
 
@@ -196,6 +205,7 @@ jobs:
           cp k/out/arch/arm64/boot/Image ./Image 2>/dev/null || echo "NO_IMAGE"
           cp k/out/.config ./kernel.config 2>/dev/null || true
           tail -120 build.log > build-tail.log 2>/dev/null || true
+          echo "=== config 行数 ==="; grep -cE '^CONFIG_' kernel.config 2>/dev/null || true
           ls -la . || true
 
       - uses: actions/upload-artifact@v4
