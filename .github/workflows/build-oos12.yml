@@ -3,6 +3,12 @@ name: oos12-s1
 # S1 目标：用 OnePlus 官方 OOS12 源码（oneplus/sm8150_s_12.1_op7pro）重建内核，
 # 只改两项必需 config（MODULE_SIG_FORCE / MODVERSIONS），其余照原厂，只编 Image。
 #
+# v10 修复（2026-11-17）：
+#   - v9 编译推进到 drivers/，遇 camera 驱动硬 error：cam_context.c:527 定义与
+#     cam_context.h:461 声明 `cam_context_handle_dump_dev` 的 struct cam_dump_req_cmd
+#     类型冲突（clang 把首次出现在原型/定义里的 struct tag 当函数局部类型，GCC 容忍）。
+#   - step4c 在 cam_context.h 首次使用 struct 前补文件作用域前向声明统一类型。
+#
 # v9 修复（2026-11-17）：
 #   - v8 已跑通全部前置步骤并进入真实编译，.config 1935 行、CONFIG_HZ=100。
 #     唯一编译错误：kernel/sched/core.c:3219 的 OPLUS old-style 函数定义
@@ -264,6 +270,34 @@ jobs:
       - name: 4b. vendor 头文件（已由 step2b 的 symlink 重定向提供）
         run: |
           echo "vendor headers 由 step2b symlink 重定向到 k/vendor/ 提供，无需再 makedirs 覆盖"
+
+      - name: 4c. cam_context.h 补 struct 前向声明（clang conflicting-types 修复）
+        run: |
+          python3 - <<'PYCAM'
+          p = "k/drivers/media/platform/msm/camera/cam_core/cam_context.h"
+          lines = open(p, encoding="utf-8", errors="replace").read().splitlines(True)
+          # clang 把首次出现在函数原型/定义里的 struct tag 当成函数局部类型，
+          # 导致 cam_context.c:527 定义与 cam_context.h:461 声明 conflicting types。
+          # GCC 容忍、clang 拒绝。补一个文件作用域前向声明即可统一两处类型。
+          decl = "struct cam_dump_req_cmd; /* S1FIX: file-scope forward decl */\n"
+          if any(l.strip() == decl.strip() for l in lines):
+              print("already patched")
+          else:
+              out, done = [], False
+              for ln in lines:
+                  if not done and "struct cam_dump_req_cmd" in ln:
+                      out.append(decl); done = True
+                  out.append(ln)
+              open(p, "w", encoding="utf-8", newline="\n").write("".join(out))
+              print("patched, inserted before first use:", done)
+          # 自检：前向声明必须早于第一次使用
+          txt = open(p, encoding="utf-8", errors="replace").read()
+          a = txt.find("struct cam_dump_req_cmd;")
+          b = txt.find("struct cam_dump_req_cmd *cmd")
+          print("decl@%d first_use@%d ok=%s" % (a, b, 0 <= a < b))
+          if not (0 <= a < b):
+              raise SystemExit("ABORT: cam_context.h 前向声明位置不对")
+          PYCAM
 
       - name: 5. defconfig + 只改两项 + 硬门禁
         run: |
