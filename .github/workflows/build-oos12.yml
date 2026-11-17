@@ -1,56 +1,19 @@
-name: oos12-s1
+name: oos12-s1e
 
-# S1 目标：用 OnePlus 官方 OOS12 源码（oneplus/sm8150_s_12.1_op7pro）重建内核，
-# 只改两项必需 config（MODULE_SIG_FORCE / MODVERSIONS），其余照原厂，只编 Image。
+# S1e 目标：B 槽无声卡/ADSP 的根本因是官方 OPLUS 树缺少「设备 OEM vendor」（22 个音频/平台 .ko +
+# modules.load + init.target.rc 的 t≈5.4s 音频 early-init），且官方树自带音频驱动是错 OEM（OPPO 设备用 OPPO OEM .ko）。
+# 路线：S1b 基座（官方 OPLUS 树 + 修 packed-union EXPORT_SYMBOL + CONFIG_MODVERSIONS=n + vermagic 欺骗含 modversions）
+#      + 叠入设备 OEM vendor（ko/oem：22 .ko + modules.load + OEM init.target.rc）→ 设备自有 OEM .ko 在 OPLUS 内核上加载
+#      + post-build 修补 Image 的 vermagic 串，使其含 modversions（匹配 OEM .ko vermagic）→ 加载时 vermagic 通过、
+#      MODVERSIONS=n 跳过 CRC 校验 → 音频在 t≈5.4s 正常装载 → boot_adsp → ADSP 恢复。
 #
-# v12 修复（2026-11-17）：
-#   - v11 编译推进到 drivers/platform/msm/ipa 后又遇 fatal error：OPLUS 头文件
-#     oplus_battery_msm8150Q.h 硬编码 #include "../../../../kernel/msm-4.14/..."，
-#     相对 charger_ic/ 解析为 k/kernel/msm-4.14/（不存在），真实文件在 k/ 内核根。
-#   - step4d 建 k/kernel/msm-4.14 -> .. symlink，统一解析所有该硬编码前缀。
-#
-# v11 修复（2026-11-17）：
-#   - camera 驱动（CONFIG_SPECTRA_CAMERA）与 S1 的 ADSP/声卡验证无关，却是 vendor
-#     overlay 类型错误重灾区（v9 conflicting-types、v10 前向声明插错位置致语法错）。
-#     放弃逐个修源码，直接在 step5 关 CONFIG_SPECTRA_CAMERA 整体剔除 camera 驱动树。
-#     step4c 降级为 no-op。
-#   - watcher 支持 RUN_ID 环境变量，避免 push 后新 run 未进 API 时抓到旧 run。
-#
-# v10 修复（2026-11-17）：
-#   - v9 编译推进到 drivers/，遇 camera 驱动硬 error：cam_context.c:527 定义与
-#     cam_context.h:461 声明 `cam_context_handle_dump_dev` 的 struct cam_dump_req_cmd
-#     类型冲突（clang 把首次出现在原型/定义里的 struct tag 当函数局部类型，GCC 容忍）。
-#   - step4c 在 cam_context.h 首次使用 struct 前补文件作用域前向声明统一类型。
-#
-# v9 修复（2026-11-17）：
-#   - v8 已跑通全部前置步骤并进入真实编译，.config 1935 行、CONFIG_HZ=100。
-#     唯一编译错误：kernel/sched/core.c:3219 的 OPLUS old-style 函数定义
-#     `void adjust_sched_assist_input_ctrl(){` 触发 -Werror,-Wstrict-prototypes。
-#     KCFLAGS 从 -Wno-error 改为 "-Wno-error -Wno-strict-prototypes"（只关风格告警）。
-#
-# v8 修复（2026-11-17）：
-#   - step2b 的「全部 vendor symlink 必须可解析」过严：上游固有 4 个 32bit defconfig
-#     (sa515m/sdxprairie) 指向 vendor 仓未提供的文件，与 arm64 Image 无关却触发 ABORT。
-#     改为：仅「重定向动作失败」与「sched_assist_mutex.h 不可读」硬中止，
-#     上游固有 broken 只打印警告。
-#
-# v7 修复（2026-11-17）：
-#   - 官方树 k/include/linux/sched_assist 等是 symlink -> ../../../../vendor/...，
-#     因我们把内核仓放 k/（而非官方的 kernel/oneplus/sm8150/），解析到 workspace 外的
-#     ../vendor/ → broken symlink → 旧 step4b 用 makedirs 覆盖它撞 FileExistsError。
-#   - step2b 把所有 vendor symlink 重定向到已 cp 好的 k/vendor/ 并验证全部可解析，
-#     且必须在 step4 S1FIX 之前（否则 vendor Kconfig 会被误判缺失而注释）。
-#   - 删除旧 step4b 的 makedirs overlay（symlink 已能提供头文件）。
-#
-# v2 修复（2026-11-17）：
-#   - step4 S1FIX 曾以「Kconfig 文件所在目录」为 base 判 source 存在与否，
-#     而 Linux Kconfig 的 source 路径是相对内核根(srctree)的 → 误注释 260 个
-#     Kconfig / 2024 行（含 arch/$SRCARCH/Kconfig 入口）→ .config 只剩 2 行 →
-#     CONFIG_HZ 空 → timeconst 用 bc 等待 stdin → 91 分钟挂死。
-#     现在改为：只遍历 k/、base=k/、跳过含 $ 或绝对路径、只注释确实缺失的静态路径。
-#   - step5 加硬门禁：.config 必须 >=1000 行且含 CONFIG_HZ/CONFIG_MODULES，否则立即失败。
-#   - step6 加 timeout/stdbuf/</dev/null，杜绝任何读 stdin 卡死与无限等待。
-
+# v1（2026-11-17）：S1e — 在 S1d workflow 上叠加：
+#   1) 新增 step4e1：把本地 ko/oem（设备 OEM vendor）拷入 k/vendor/lib/modules 与 k/vendor/etc/init/hw
+#      （官方 OPLUS k/vendor 无这两处，无冲突）。
+#   2) step5 MODVERSIONS 从 =y 改为 =n（跳过 CRC 校验，让设备 OEM .ko 能加载）。
+#   3) 原 step5b 改确认 MODVERSIONS=n；新增 step7a：post-build 修补 raw Image 的 vermagic 串
+#      （MODVERSIONS=n 的内核 vermagic 缺 modversions → 补 "modversions"，使与设备 OEM .ko vermagic 一致）。
+#   4) step7 收集 Image + kernel.config + build.log + build-tail + vermagic 修补标记。
 on:
   push:
     branches: [ oos12 ]
@@ -134,8 +97,6 @@ jobs:
           print("仍 broken 的 vendor symlink: %d（上游固有，多为无关 32bit defconfig，仅警告）" % len(still))
           for p, t in still[:20]:
               print("   BROKEN(warn) %s -> %s" % (p, t))
-          # 只有重定向动作本身失败才中止。上游固有 broken（sa515m/sdxprairie 32bit
-          # defconfig 指向 vendor 仓未提供的文件）与 arm64 Image 构建无关，不阻断。
           if broken:
               for p, e in broken:
                   print("ERR relink %s : %s" % (p, e))
@@ -195,12 +156,10 @@ jobs:
           fixed_k, fixed_m, skipped = [], [], []
 
           def source_ok(rel):
-              # 含变量 / 绝对路径：绝不判定为缺失
               if rel.startswith("/") or "$" in rel or "(" in rel:
                   return True
               return os.path.exists(os.path.normpath(os.path.join(KR, rel)))
 
-          # 1) 只遍历内核树 k/ 的 Kconfig
           for dp, dn, fn in os.walk(KR):
               if "/.git" in dp or dp.startswith(".git"):
                   continue
@@ -213,9 +172,6 @@ jobs:
                   continue
               out, hit = [], 0
               for ln in lines:
-                  # Kconfig source 支持带引号与不带引号两种写法：
-                  #   source "block/foo/Kconfig"
-                  #   source block/oplus_foreground_io_opt/Kconfig   <- 官方树就是这种
                   m = re.match(r'^(\s*)(source|rsource|osource)\s+(?:"([^"]+)"|(\S+))\s*$', ln)
                   if m:
                       rel = m.group(3) if m.group(3) is not None else m.group(4)
@@ -228,7 +184,6 @@ jobs:
                   open(p, "w", encoding="utf-8", newline="\n").write("".join(out))
                   fixed_k.append((p, hit))
 
-          # 2) Makefile: obj-y += dir/ 指向确实缺失的目录（同样 base=k/）
           for dp, dn, fn in os.walk(KR):
               if "/.git" in dp or dp.startswith(".git"):
                   continue
@@ -263,15 +218,10 @@ jobs:
           print("=== 缺失路径（去重 %d）===" % len(set(skipped)))
           for s in sorted(set(skipped)):
               print("   " + s)
-          # 硬门禁：OPLUS 私有驱动 Kconfig（touchscreen/soc+oplus/secureguard 等）在官方
-          # 发布里确实缺失，实测约 102 行属正常；但绝不能出现上一版 260 文件/2024 行的
-          # 灾难（那是 base 逻辑错误把 arch/$SRCARCH 等核心入口也注释了）。阈值 400。
-          # 真正的正确性由 step5 的 .config 门禁（>=1000 行 + CONFIG_HZ + CONFIG_MODULES）保证。
           total_lines = sum(n for _, n in fixed_k)
           print("S1FIX_TOTAL_KCONFIG_LINES=%d" % total_lines)
           if total_lines > 400:
               raise SystemExit("ABORT: S1FIX 注释了 %d 行 Kconfig source，超过 400 行安全阈值，判定 base 逻辑有误" % total_lines)
-          # 附加核心文件保护：这些顶层入口绝不允许被注释（skipped 里存的是 k/ 前缀相对路径）
           core = {os.path.normpath(os.path.join(KR, c)) for c in
                   ["arch/$SRCARCH/Kconfig", "init/Kconfig", "drivers/Kconfig", "fs/Kconfig",
                    "mm/Kconfig", "net/Kconfig", "kernel/Kconfig", "sound/Kconfig", "block/Kconfig"]}
@@ -292,9 +242,6 @@ jobs:
         run: |
           python3 - <<'PYKP'
           import os
-          # OPLUS 源码里有硬编码 #include "../../../../kernel/msm-4.14/drivers/..."
-          # 相对 k/drivers/power/oplus/charger_ic/ 解析为 k/kernel/msm-4.14/...，
-          # 实际内核根就是 k/。建 k/kernel/msm-4.14 -> ..（指向 k/）统一解析。
           d = "k/kernel"
           link = os.path.join(d, "msm-4.14")
           os.makedirs(d, exist_ok=True)
@@ -306,7 +253,6 @@ jobs:
           if not os.path.lexists(link):
               os.symlink("..", link)
               print("created symlink", link, "-> ..")
-          # 自检：从 charger_ic 出发的硬编码路径应能解析到真实 storm-watch.h
           probe = os.path.normpath(os.path.join(
               "k/drivers/power/oplus/charger_ic",
               "../../../../kernel/msm-4.14/drivers/power/supply/qcom/storm-watch.h"))
@@ -315,7 +261,7 @@ jobs:
               raise SystemExit("ABORT: kernel/msm-4.14 symlink 未修正硬编码路径")
           PYKP
 
-      - name: 4e. S1d — 修 MODVERSIONS 的 packed-union EXPORT_SYMBOL（genksyms 无法生成 CRC）
+      - name: 4e. S1d/S1e — 修 MODVERSIONS 的 packed-union EXPORT_SYMBOL（genksyms 无法生成 CRC）
         run: |
           python3 - <<'PYEXP'
           import os, re
@@ -335,10 +281,8 @@ jobs:
                       src = open(p, encoding="utf-8", errors="replace").read()
                   except Exception:
                       continue
-                  # 找 EXPORT_SYMBOL(foo); 且 foo 的定义含 "union __packed" 参数
                   for m in re.finditer(r'EXPORT_SYMBOL(_GPL|_NS[^)]*)?\(\s*(\w+)\s*\)', src):
                       sym = m.group(2)
-                      # 在该文件里找函数定义 "int/void/... sym(...union __packed..."
                       dm = re.search(r'\b' + re.escape(sym) + r'\s*\([^;{]*union\s+__packed[^;{]*\)\s*\{', src)
                       if dm:
                           hits.append((p, sym, m.group(0)))
@@ -346,25 +290,49 @@ jobs:
           for p, sym, exp in hits:
               print("  ", p, "->", sym)
               src = open(p, encoding="utf-8", errors="replace").read()
-              src = src.replace(exp, "/* S1d disabled: " + exp + " */", 1)
+              src = src.replace(exp, "/* S1d/S1e disabled: " + exp + " */", 1)
               open(p, "w", encoding="utf-8").write(src)
-          # 自检：确认 gsi_write_channel_scratch 的 export 已被注释
           gsi = open("k/drivers/platform/msm/gsi/gsi.c", encoding="utf-8", errors="replace").read()
-          if 'EXPORT_SYMBOL(gsi_write_channel_scratch);' in gsi and '/* S1d disabled: EXPORT_SYMBOL(gsi_write_channel_scratch); */' not in gsi:
+          if 'EXPORT_SYMBOL(gsi_write_channel_scratch);' in gsi and '/* S1d/S1e disabled: EXPORT_SYMBOL(gsi_write_channel_scratch); */' not in gsi:
               raise SystemExit("ABORT: gsi_write_channel_scratch export 未被注释")
-          print("S1D_EXPORT_PATCH_OK")
+          print("S1D/S1E_EXPORT_PATCH_OK")
           PYEXP
 
-      - name: 5. defconfig + 关 camera + 硬门禁
+      - name: 4e1. S1e — 叠入设备 OEM vendor（ko/oem → k/vendor）
+        run: |
+          set -e
+          # 设备 OEM vendor：/vendor/lib/modules（22 .ko + modules.load 等）+ /vendor/etc/init/hw/init.target.rc。
+          # 官方 OPLUS k/vendor 无这两处，无冲突；叠入后 CONFIG_MODULES 按 OEM modules.load 加载 .ko，
+          # OEM init.target.rc 的 t≈5.4s 音频 early-init 在 S1 内核上执行。
+          if [ ! -d ko/oem/modules ] || [ ! -f ko/oem/init.target.rc ]; then
+            echo "ABORT: ko/oem 不完整（缺 modules 或 init.target.rc），先补提取"
+            exit 1
+          fi
+          echo "=== 叠入 OEM vendor ==="
+          mkdir -p k/vendor/lib k/vendor/etc/init/hw
+          # 拷贝 modules 目录（含 .ko + modules.load）
+          cp -a ko/oem/modules/. k/vendor/lib/modules/
+          echo "vendor/lib/modules .ko 数 = $(ls k/vendor/lib/modules/*.ko 2>/dev/null | wc -l)"
+          echo "vendor/lib/modules/modules.load 存在 = $([ -f k/vendor/lib/modules/modules.load ] && echo yes || echo no)"
+          # 拷贝 OEM init.target.rc 到 init/hw
+          cp ko/oem/init.target.rc k/vendor/etc/init/hw/init.target.rc
+          echo "vendor/etc/init/hw/init.target.rc 存在 = $([ -f k/vendor/etc/init/hw/init.target.rc ] && echo yes || echo no)"
+          # 自检：init.target.rc 含音频 early-init modprobe（device OEM 特有）
+          grep -cE 'modprobe.*(audio|adsp|q6|aphor)' k/vendor/etc/init/hw/init.target.rc | xargs echo "init.target.rc 音频相关行数 ="
+          # 自检：modules.load 非空
+          wc -c k/vendor/lib/modules/modules.load | xargs echo "modules.load 大小 ="
+          echo "S1E_OVERLAY_OK"
+
+      - name: 5. defconfig + 关 camera + 硬门禁（MODVERSIONS=n）
         run: |
           set -e
           export PATH=$PWD/tc/bin:$PATH
           cd k
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- vendor/sm8150-perf_defconfig
-          # 必需：关签名强制 / 模块版本校验；camera 驱动与 ADSP/声卡无关且是
-          # vendor overlay 类型错误重灾区（clang conflicting-types），整体剔除。
-          scripts/config --file out/.config -d MODULE_SIG_FORCE -d SPECTRA_CAMERA -e MODVERSIONS
+          # 必需：关签名强制 / 关模块版本校验（CRC）/ camera 整体剔除；MODVERSIONS=n（跳过 CRC 校验，让设备 OEM .ko 能加载）
+          scripts/config --file out/.config -d MODULE_SIG_FORCE -d SPECTRA_CAMERA -e MODVERSIONS \
+              -d MODVERSIONS
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           echo "=== 配置核验 ==="
@@ -372,17 +340,20 @@ jobs:
           echo "CONFIG 行数 = $N"
           head -5 out/.config
           grep -E 'CONFIG_HZ=|CONFIG_MODULES=|CONFIG_MODULE_SIG_FORCE|CONFIG_MODVERSIONS' out/.config || true
-          # 硬门禁：坏 config 立即失败，不再空等 91 分钟
+          # 硬门禁：坏 config 立即失败
           test "$N" -ge 1000 || { echo "ABORT: .config 只有 $N 行 (<1000)，Kconfig 树仍被破坏"; exit 1; }
           grep -qE '^CONFIG_HZ=[0-9]+$' out/.config || { echo "ABORT: CONFIG_HZ 未定义，timeconst 会挂 bc"; exit 1; }
           grep -qE '^CONFIG_MODULES=y$' out/.config || { echo "ABORT: CONFIG_MODULES 未定义"; exit 1; }
+          # S1e 特定：必须 MODVERSIONS=n（跳过 CRC 校验）
+          grep -q '^CONFIG_MODVERSIONS=n$' out/.config || { echo "ABORT: S1e 需要 CONFIG_MODVERSIONS=n，实际="; grep '^CONFIG_MODVERSIONS=' out/.config; exit 1; }
+          grep -q '^CONFIG_MODULE_SIG_FORCE=n$' out/.config || { echo "ABORT: CONFIG_MODULE_SIG_FORCE 非 n"; exit 1; }
 
-      - name: 5b. S1c — 确认真正的 MODVERSIONS=y
+      - name: 5b. S1e — 确认真正的 MODVERSIONS=n（跳过 CRC 校验）
         run: |
-          echo "S1c = 官方 OOS12 树 + 原厂 MODVERSIONS=y（CRC 校验），不再骗 vermagic 字符串"
+          echo "S1e = 官方 OPLUS 树 + 设备 OEM vendor 叠载 + MODVERSIONS=n（跳过 CRC，让 OEM .ko 加载）"
           grep -E '^CONFIG_MODVERSIONS=' k/out/.config || { echo "ABORT: MODVERSIONS 项缺失"; exit 1; }
-          grep -q '^CONFIG_MODVERSIONS=y$' k/out/.config || { echo "ABORT: MODVERSIONS 未打开"; exit 1; }
-          grep -q '^CONFIG_MODVERSIONS=y$' k/out/.config && echo "REAL_MODVERSIONS_OK"
+          grep -q '^CONFIG_MODVERSIONS=n$' k/out/.config || { echo "ABORT: MODVERSIONS 未设为 n（不是真跳过 CRC）"; exit 1; }
+          grep -q '^CONFIG_MODULE_SIG_FORCE=n$' k/out/.config && echo "REAL_MODVERSIONS_N_OK"
 
       - name: 6. 编 Image（timeout + 行缓冲 + 关闭 stdin）
         run: |
@@ -396,20 +367,60 @@ jobs:
           echo "=== 产物 ==="
           ls -la out/arch/arm64/boot/Image
 
+      - name: 7a. S1e — post-build 修补 vermagic 串（含 modversions，匹配设备 OEM .ko）
+        run: |
+          set -e
+          export PATH=$PWD/tc/bin:$PATH
+          cd k
+          img = out/arch/arm64/boot/Image
+          if [ ! -f "$img" ]; then echo "ABORT: Image 不存在"; exit 1; fi
+          # MODVERSIONS=n 的内核 vermagic 缺 "modversions"；设备 OEM .ko vermagic 含 modversions。
+          # 修补 Image 内的 vermagic 串，将 "mod_unload aarch64" 改为 "mod_unload modversions aarch64"，
+          # 使加载时 vermagic 与 OEM .ko 一致（MODVERSIONS=n 跳过 CRC，故不会因 CRC 被拒）。
+          python3 - <<'PYFORGE'
+          import re, os
+          p = "out/arch/arm64/boot/Image"
+          d = bytearray(open(p, "rb").read())
+          before = d.count(b"mod_unload aarch64")
+          # 在 Image 中查找 vermagic 串（含 mod_unload 上下文）
+          pat = re.compile(rb"mod_unload[^\x00]*aarch64")
+          hits = list(pat.finditer(bytes(d)))
+          print("found vermagic-like %d" % len(hits))
+          for m in hits[:5]:
+              print("   at", m.start(), ":", m.group(0)[:80])
+          if not hits:
+              raise SystemExit("ABORT: 未找到 vermagic 串（mod_unload ... aarch64）")
+          # 仅把不含 modversions 的，补 "modversions"
+          for m in hits:
+              s = bytes(d)[m.start():m.end()]
+              if b"modversions" in s:
+                  continue
+              # 替换尾部 "aarch64" 为 "modversions aarch64"
+              idx = s.rfind(b"aarch64")
+              if idx < 0:
+                  continue
+              new = s[:idx] + b"modversions" + s[idx:]
+              d = bytearray(d[:m.start()]) + bytearray(new) + bytearray(d[m.end():])
+          open(p, "wb").write(d)
+          after = d.count(b"mod_unload modversions aarch64")
+          print("patched mod_unload aarch64 -> mod_unload modversions aarch64: %d (before %d, after %d)" % (before, before, after))
+          if after == 0:
+              raise SystemExit("ABORT: vermagic 修补后仍无 modversions aarch64")
+          print("VERMAGIC_FORGE_OK")
+          PYFORGE
+          # 自检：Image 中现在应含 mod_unload modversions aarch64
+          grep -aoE 'mod_unload modversions aarch64' out/arch/arm64/boot/Image | head -1 | xargs echo "Image vermagic vercheck:"
+          ls -la out/arch/arm64/boot/Image
+
       - name: 7. 收集
         if: always()
         run: |
           cp k/out/arch/arm64/boot/Image ./Image 2>/dev/null || echo "NO_IMAGE"
           cp k/out/.config ./kernel.config 2>/dev/null || true
-          cp k/out/System.map ./System.map 2>/dev/null || echo "NO_SYSTEM_MAP"
           tail -120 build.log > build-tail.log 2>/dev/null || true
-          echo "=== S1diag: CRC judge (vendor .ko expects module_layout=3403487431) ==="
-          grep -E '__crc_(module_layout|__stack_chk_fail|__stack_chk_guard|regulator_set_voltage|subsystem_restart_dev|kobject_del|strcmp)$' System.map 2>/dev/null || echo "NO_CRC_SYMS"
-          echo "=== S1diag: total __crc_ syms ==="
-          grep -c '__crc_' System.map 2>/dev/null || true
           echo "=== config 行数 ==="; grep -cE '^CONFIG_' kernel.config 2>/dev/null || true
-          echo "=== S1c MODVERSIONS + vermagic 验证 ==="
-          grep -E '^CONFIG_MODVERSIONS=' kernel.config || true
+          echo "=== S1e MODVERSIONS=n + vermagic 验证 ==="
+          grep -E '^CONFIG_MODVERSIONS=|^CONFIG_MODULE_SIG_FORCE=' kernel.config || true
           python3 - <<'PYEOF'
           import os, re
           if not os.path.isfile("Image"):
@@ -425,18 +436,19 @@ jobs:
               print("KERNEL_VERMAGIC:", s)
           if not any("modversions" in s for s in found):
               raise SystemExit("ABORT: Image vermagic 不含 modversions")
-          print("S1C_MODVERSIONS_OK")
+          if not any("mod_unload modversions aarch64" in s for s in found):
+              raise SystemExit("ABORT: Image vermagic 未修补含 modversions aarch64")
+          print("S1E_MODVERSIONS_N_AND_VERMAGIC_OK")
           PYEOF
           ls -la . || true
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: oos12-s1
+          name: oos12-s1e
           path: |
             Image
             kernel.config
-            System.map
             build.log
             build-tail.log
           if-no-files-found: warn
