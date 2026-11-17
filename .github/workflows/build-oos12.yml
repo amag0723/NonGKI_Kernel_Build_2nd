@@ -131,13 +131,13 @@ jobs:
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- vendor/sm8150-perf_defconfig
           echo "=== defconfig 后 ==="
-          grep -E 'CONFIG_MODULE_SIG_FORCE|CONFIG_MODVERSIONS|CONFIG_LOCALVERSION=|CONFIG_MODULE_SIG=' out/.config
+          grep -E 'CONFIG_MODULE_SIG_FORCE|CONFIG_MODVERSIONS|CONFIG_LOCALVERSION=|CONFIG_MODULE_SIG=' out/.config || echo '   (defconfig 里没有这些项)'
           scripts/config --file out/.config -d MODULE_SIG_FORCE -d MODVERSIONS
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           echo "=== 改完（应看到 SIG_FORCE 与 MODVERSIONS 都不 set）==="
-          grep -E 'CONFIG_MODULE_SIG_FORCE|CONFIG_MODVERSIONS|CONFIG_LOCALVERSION=|CONFIG_MODULE_SIG=' out/.config
-          grep -cE '^CONFIG_' out/.config
+          grep -E 'CONFIG_MODULE_SIG_FORCE|CONFIG_MODVERSIONS|CONFIG_LOCALVERSION=|CONFIG_MODULE_SIG=' out/.config || echo '   (defconfig 里没有这些项)'
+          grep -cE '^CONFIG_' out/.config || true
 
       - name: 6. 编 Image
         run: |
