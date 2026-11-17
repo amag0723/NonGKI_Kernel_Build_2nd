@@ -315,6 +315,46 @@ jobs:
               raise SystemExit("ABORT: kernel/msm-4.14 symlink 未修正硬编码路径")
           PYKP
 
+      - name: 4e. S1d — 修 MODVERSIONS 的 packed-union EXPORT_SYMBOL（genksyms 无法生成 CRC）
+        run: |
+          python3 - <<'PYEXP'
+          import os, re
+          # MODVERSIONS=y 时 genksyms 对「按值传递 union __packed 参数」的函数无法生成 CRC，
+          # 产生 __crc_<sym> 未定义 -> ld.lld: R_AARCH64_ABS32 relocation error。
+          # 这类符号的调用方都是内核内建代码（CONFIG_IPA/GSI=y），EXPORT_SYMBOL 多余，
+          # 注释掉即可：genksyms 不再生成 CRC 表项，内建链接照常解析。
+          hits = []
+          for dp, dn, fn in os.walk("k"):
+              if ".git" in dp.split(os.sep) or "/out" in dp or dp.endswith("/out"):
+                  continue
+              for f in fn:
+                  if not f.endswith((".c", ".h")):
+                      continue
+                  p = os.path.join(dp, f)
+                  try:
+                      src = open(p, encoding="utf-8", errors="replace").read()
+                  except Exception:
+                      continue
+                  # 找 EXPORT_SYMBOL(foo); 且 foo 的定义含 "union __packed" 参数
+                  for m in re.finditer(r'EXPORT_SYMBOL(_GPL|_NS[^)]*)?\(\s*(\w+)\s*\)', src):
+                      sym = m.group(2)
+                      # 在该文件里找函数定义 "int/void/... sym(...union __packed..."
+                      dm = re.search(r'\b' + re.escape(sym) + r'\s*\([^;{]*union\s+__packed[^;{]*\)\s*\{', src)
+                      if dm:
+                          hits.append((p, sym, m.group(0)))
+          print("packed-union EXPORT_SYMBOL hits:", len(hits))
+          for p, sym, exp in hits:
+              print("  ", p, "->", sym)
+              src = open(p, encoding="utf-8", errors="replace").read()
+              src = src.replace(exp, "/* S1d disabled: " + exp + " */", 1)
+              open(p, "w", encoding="utf-8").write(src)
+          # 自检：确认 gsi_write_channel_scratch 的 export 已被注释
+          gsi = open("k/drivers/platform/msm/gsi/gsi.c", encoding="utf-8", errors="replace").read()
+          if 'EXPORT_SYMBOL(gsi_write_channel_scratch);' in gsi and '/* S1d disabled: EXPORT_SYMBOL(gsi_write_channel_scratch); */' not in gsi:
+              raise SystemExit("ABORT: gsi_write_channel_scratch export 未被注释")
+          print("S1D_EXPORT_PATCH_OK")
+          PYEXP
+
       - name: 5. defconfig + 关 camera + 硬门禁
         run: |
           set -e
