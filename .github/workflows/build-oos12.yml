@@ -3,6 +3,13 @@ name: oos12-s1
 # S1 目标：用 OnePlus 官方 OOS12 源码（oneplus/sm8150_s_12.1_op7pro）重建内核，
 # 只改两项必需 config（MODULE_SIG_FORCE / MODVERSIONS），其余照原厂，只编 Image。
 #
+# v11 修复（2026-11-17）：
+#   - camera 驱动（CONFIG_SPECTRA_CAMERA）与 S1 的 ADSP/声卡验证无关，却是 vendor
+#     overlay 类型错误重灾区（v9 conflicting-types、v10 前向声明插错位置致语法错）。
+#     放弃逐个修源码，直接在 step5 关 CONFIG_SPECTRA_CAMERA 整体剔除 camera 驱动树。
+#     step4c 降级为 no-op。
+#   - watcher 支持 RUN_ID 环境变量，避免 push 后新 run 未进 API 时抓到旧 run。
+#
 # v10 修复（2026-11-17）：
 #   - v9 编译推进到 drivers/，遇 camera 驱动硬 error：cam_context.c:527 定义与
 #     cam_context.h:461 声明 `cam_context_handle_dump_dev` 的 struct cam_dump_req_cmd
@@ -271,42 +278,20 @@ jobs:
         run: |
           echo "vendor headers 由 step2b symlink 重定向到 k/vendor/ 提供，无需再 makedirs 覆盖"
 
-      - name: 4c. cam_context.h 补 struct 前向声明（clang conflicting-types 修复）
+      - name: 4c. camera 驱动（v11 起由 step5 关 CONFIG_SPECTRA_CAMERA 整体剔除）
         run: |
-          python3 - <<'PYCAM'
-          p = "k/drivers/media/platform/msm/camera/cam_core/cam_context.h"
-          lines = open(p, encoding="utf-8", errors="replace").read().splitlines(True)
-          # clang 把首次出现在函数原型/定义里的 struct tag 当成函数局部类型，
-          # 导致 cam_context.c:527 定义与 cam_context.h:461 声明 conflicting types。
-          # GCC 容忍、clang 拒绝。补一个文件作用域前向声明即可统一两处类型。
-          decl = "struct cam_dump_req_cmd; /* S1FIX: file-scope forward decl */\n"
-          if any(l.strip() == decl.strip() for l in lines):
-              print("already patched")
-          else:
-              out, done = [], False
-              for ln in lines:
-                  if not done and "struct cam_dump_req_cmd" in ln:
-                      out.append(decl); done = True
-                  out.append(ln)
-              open(p, "w", encoding="utf-8", newline="\n").write("".join(out))
-              print("patched, inserted before first use:", done)
-          # 自检：前向声明必须早于第一次使用
-          txt = open(p, encoding="utf-8", errors="replace").read()
-          a = txt.find("struct cam_dump_req_cmd;")
-          b = txt.find("struct cam_dump_req_cmd *cmd")
-          print("decl@%d first_use@%d ok=%s" % (a, b, 0 <= a < b))
-          if not (0 <= a < b):
-              raise SystemExit("ABORT: cam_context.h 前向声明位置不对")
-          PYCAM
+          echo "camera 驱动与 S1 的 ADSP/声卡验证无关，且是 vendor overlay 类型错误重灾区；已在 step5 关 CONFIG_SPECTRA_CAMERA 整体不编译"
 
-      - name: 5. defconfig + 只改两项 + 硬门禁
+      - name: 5. defconfig + 关 camera + 硬门禁
         run: |
           set -e
           export PATH=$PWD/tc/bin:$PATH
           cd k
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- vendor/sm8150-perf_defconfig
-          scripts/config --file out/.config -d MODULE_SIG_FORCE -d MODVERSIONS
+          # 必需：关签名强制 / 模块版本校验；camera 驱动与 ADSP/声卡无关且是
+          # vendor overlay 类型错误重灾区（clang conflicting-types），整体剔除。
+          scripts/config --file out/.config -d MODULE_SIG_FORCE -d MODVERSIONS -d SPECTRA_CAMERA
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           echo "=== 配置核验 ==="
