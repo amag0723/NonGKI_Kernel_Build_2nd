@@ -401,16 +401,18 @@ jobs:
               print("   at", m.start(), ":", m.group(0)[:80])
           if not hits:
               raise SystemExit("ABORT: 未找到 vermagic 串（mod_unload ... aarch64）")
-          # 仅把不含 modversions 的，补 "modversions"
+          # 仅把不含 modversions 的，补 "modversions"（保持 mod_unload modversions aarch64 单空格格式，匹配设备 OEM .ko vermagic）
           for m in hits:
               s = bytes(d)[m.start():m.end()]
               if b"modversions" in s:
                   continue
-              # 替换尾部 "aarch64" 为 "modversions aarch64"
+              # s 形如 b'mod_unload aarch64'（中间可能有额外内容）。把 "aarch64" 前插 "modversions "，
+              # head.rstrip() 去掉 aarch64 前已有的尾部空格，保证单空格格式。
               idx = s.rfind(b"aarch64")
               if idx < 0:
                   continue
-              new = s[:idx] + b"modversions" + s[idx:]
+              head = s[:idx]
+              new = head.rstrip() + b" modversions " + s[idx:]
               d = bytearray(d[:m.start()]) + bytearray(new) + bytearray(d[m.end():])
           open(p, "wb").write(d)
           after = d.count(b"mod_unload modversions aarch64")
