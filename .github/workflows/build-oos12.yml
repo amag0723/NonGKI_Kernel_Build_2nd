@@ -3,6 +3,12 @@ name: oos12-s1
 # S1 目标：用 OnePlus 官方 OOS12 源码（oneplus/sm8150_s_12.1_op7pro）重建内核，
 # 只改两项必需 config（MODULE_SIG_FORCE / MODVERSIONS），其余照原厂，只编 Image。
 #
+# v9 修复（2026-11-17）：
+#   - v8 已跑通全部前置步骤并进入真实编译，.config 1935 行、CONFIG_HZ=100。
+#     唯一编译错误：kernel/sched/core.c:3219 的 OPLUS old-style 函数定义
+#     `void adjust_sched_assist_input_ctrl(){` 触发 -Werror,-Wstrict-prototypes。
+#     KCFLAGS 从 -Wno-error 改为 "-Wno-error -Wno-strict-prototypes"（只关风格告警）。
+#
 # v8 修复（2026-11-17）：
 #   - step2b 的「全部 vendor symlink 必须可解析」过严：上游固有 4 个 32bit defconfig
 #     (sa515m/sdxprairie) 指向 vendor 仓未提供的文件，与 arm64 Image 无关却触发 ABORT。
@@ -287,7 +293,7 @@ jobs:
           timeout 2400s stdbuf -oL -eL \
             make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                  CROSS_COMPILE=aarch64-linux-gnu- LD=ld.lld \
-                 KCFLAGS="-Wno-error" -j$(nproc) Image </dev/null 2>&1 | tee ../build.log
+                 KCFLAGS="-Wno-error -Wno-strict-prototypes" -j$(nproc) Image </dev/null 2>&1 | tee ../build.log
           echo "=== 产物 ==="
           ls -la out/arch/arm64/boot/Image
 
