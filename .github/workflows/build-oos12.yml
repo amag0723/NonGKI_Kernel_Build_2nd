@@ -383,7 +383,7 @@ jobs:
           set -e
           export PATH=$PWD/tc/bin:$PATH
           cd k
-          img = out/arch/arm64/boot/Image
+          img=out/arch/arm64/boot/Image
           if [ ! -f "$img" ]; then echo "ABORT: Image 不存在"; exit 1; fi
           # MODVERSIONS=n 的内核 vermagic 缺 "modversions"；设备 OEM .ko vermagic 含 modversions。
           # 修补 Image 内的 vermagic 串，将 "mod_unload aarch64" 改为 "mod_unload modversions aarch64"，
