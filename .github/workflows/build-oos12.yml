@@ -52,6 +52,46 @@ jobs:
           ./tc/bin/clang --version | head -2
           ls tc/bin | grep -E '^(clang|ld.lld|llvm-ar)$'
 
+      - name: 3b. as 分派器（Proton-Clang 自带 as 是 host x86，遇 -EL 直接报错）
+        run: |
+          python3 - <<'PYASW'
+          import os, shutil, stat
+          cb = os.path.join(os.getcwd(), "tc", "bin")
+          host_as = os.path.join(cb, "as")
+          backup = os.path.join(cb, "as.host")
+          cross_dir = os.path.join(cb, "aarch64-linux-gnu-as")
+          print("cb =", cb)
+          print("as exists =", os.path.isfile(host_as), " aarch64-as in cb =", os.path.isfile(cross_dir))
+          if os.path.isfile(host_as) and not os.path.exists(backup):
+              shutil.copy2(host_as, backup)
+              script = (
+                  "#!/bin/bash\n"
+                  'HERE="$(cd "$(dirname "$0")" && pwd)"\n'
+                  'for a in "$@"; do\n'
+                  '  case "$a" in\n'
+                  '    -EL|-EB)\n'
+                  '      if [ -x "$HERE/aarch64-linux-gnu-as" ]; then\n'
+                  '        exec "$HERE/aarch64-linux-gnu-as" "$@"\n'
+                  '      fi\n'
+                  '      if [ -x /usr/bin/aarch64-linux-gnu-as ]; then\n'
+                  '        exec /usr/bin/aarch64-linux-gnu-as "$@"\n'
+                  '      fi\n'
+                  '      ;;\n'
+                  '  esac\n'
+                  'done\n'
+                  'exec "$HERE/as.host" "$@"\n'
+              )
+              with open(host_as, "w", encoding="utf-8", newline="\n") as f:
+                  f.write(script)
+              os.chmod(host_as, 0o755)
+              print("=== as dispatcher installed (host=as.host, arm64=/usr/bin/aarch64-linux-gnu-as) ===")
+          else:
+              print("=== as dispatcher skipped ===")
+          # 确认系统 aarch64 as 可用
+          print("system cross as:", os.path.exists("/usr/bin/aarch64-linux-gnu-as"))
+          PYASW
+          /usr/bin/aarch64-linux-gnu-as --version | head -1
+
       - name: 4. 完整性修复（官方发布缺目录，自动注释引用）
         run: |
           python3 - <<'PYEOF'
@@ -141,7 +181,7 @@ jobs:
 
       - name: 6. 编 Image
         run: |
-          set -e
+          set -e -o pipefail
           export PATH=$PWD/tc/bin:$PATH
           cd k
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
