@@ -298,28 +298,24 @@ jobs:
           print("S1D/S1E_EXPORT_PATCH_OK")
           PYEXP
 
-      - name: 4e1. S1e — 叠入设备 OEM vendor（ko/oem → k/vendor）
+      - name: 4e1. S1e — 叠入设备 OEM vendor（oem.zip → k/vendor）
         run: |
           set -e
-          # 设备 OEM vendor：/vendor/lib/modules（22 .ko + modules.load 等）+ /vendor/etc/init/hw/init.target.rc。
-          # 官方 OPLUS k/vendor 无这两处，无冲突；叠入后 CONFIG_MODULES 按 OEM modules.load 加载 .ko，
+          # oem.zip 含设备 OEM vendor：lib/modules（22 .ko + modules.load 等）+ etc/init/hw/init.target.rc。
+          # 官方 OPLUS k/vendor 无这两处，无冲突；un zip 后 CONFIG_MODULES 按 OEM modules.load 加载 .ko，
           # OEM init.target.rc 的 t≈5.4s 音频 early-init 在 S1 内核上执行。
-          if [ ! -d ko/oem/modules ] || [ ! -f ko/oem/init.target.rc ]; then
-            echo "ABORT: ko/oem 不完整（缺 modules 或 init.target.rc），先补提取"
+          if [ ! -f oem.zip ]; then
+            echo "ABORT: oem.zip 不存在（需先推送 ko/oem.zip）"
             exit 1
           fi
-          echo "=== 叠入 OEM vendor ==="
           mkdir -p k/vendor/lib k/vendor/etc/init/hw
-          # 拷贝 modules 目录（含 .ko + modules.load）
-          cp -a ko/oem/modules/. k/vendor/lib/modules/
+          rm -rf k/vendor/lib/modules k/vendor/etc/init/hw/init.target.rc
+          unzip -q -o oem.zip -d k/vendor
           echo "vendor/lib/modules .ko 数 = $(ls k/vendor/lib/modules/*.ko 2>/dev/null | wc -l)"
           echo "vendor/lib/modules/modules.load 存在 = $([ -f k/vendor/lib/modules/modules.load ] && echo yes || echo no)"
-          # 拷贝 OEM init.target.rc 到 init/hw
-          cp ko/oem/init.target.rc k/vendor/etc/init/hw/init.target.rc
           echo "vendor/etc/init/hw/init.target.rc 存在 = $([ -f k/vendor/etc/init/hw/init.target.rc ] && echo yes || echo no)"
           # 自检：init.target.rc 含音频 early-init modprobe（device OEM 特有）
           grep -cE 'modprobe.*(audio|adsp|q6|aphor)' k/vendor/etc/init/hw/init.target.rc | xargs echo "init.target.rc 音频相关行数 ="
-          # 自检：modules.load 非空
           wc -c k/vendor/lib/modules/modules.load | xargs echo "modules.load 大小 ="
           echo "S1E_OVERLAY_OK"
 
