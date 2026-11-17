@@ -338,9 +338,9 @@ jobs:
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           # 归一为显式 =n：scripts/config -d 会把项置为「未启用」注释态（注释行形如 "# CONFIG_X is not set"），gate 要求显式 =n；此处统一覆盖为 =n
-          sed -i 's/^[[:space:]]*#?CONFIG_MODULE_SIG_FORCE is not set[[:space:]]*$/CONFIG_MODULE_SIG_FORCE=n/' out/.config
+          sed -i 's/^[[:space:]]*[# ]*CONFIG_MODULE_SIG_FORCE is not set[[:space:]]*$/CONFIG_MODULE_SIG_FORCE=n/' out/.config
           sed -i 's/^[[:space:]]*CONFIG_MODULE_SIG_FORCE=y[[:space:]]*$/CONFIG_MODULE_SIG_FORCE=n/' out/.config
-          sed -i 's/^[[:space:]]*#?CONFIG_MODVERSIONS is not set[[:space:]]*$/CONFIG_MODVERSIONS=n/' out/.config
+          sed -i 's/^[[:space:]]*[# ]*CONFIG_MODVERSIONS is not set[[:space:]]*$/CONFIG_MODVERSIONS=n/' out/.config
           sed -i 's/^[[:space:]]*CONFIG_MODVERSIONS=y[[:space:]]*$/CONFIG_MODVERSIONS=n/' out/.config
           echo "=== 配置核验 ==="
           N=$(grep -cE '^CONFIG_' out/.config || true)
