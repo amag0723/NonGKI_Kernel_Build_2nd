@@ -1,0 +1,99 @@
+name: oos12-s1
+
+# S1 目标：用 OnePlus 官方 OOS12 源码（oneplus/sm8150_s_12.1_op7pro）重建内核，
+# 只改两项必需 config（MODULE_SIG_FORCE / MODVERSIONS），其余照原厂，
+# 只编 Image（模块用 OEM 的 /vendor/lib/modules，不自己编）。
+#
+# 为什么：ADSP bring-up 在原厂树上本来是好的，之前 6 次挂死全是「模板树 baseline 不匹配」。
+# 本 workflow 只做一件事：把原厂树编出 Image，验证 ADSP/声卡是否正常。
+#
+# 触发：push 到分支 oos12（本文件只存在于 oos12 分支，因此不会触发 build-sample.yml）
+
+on:
+  push:
+    branches: [ oos12 ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    steps:
+      - name: 0. 环境
+        run: |
+          echo "nproc=$(nproc)"; free -g | head -2; df -h / | tail -1
+          git --version; python3 --version
+
+      - name: 1. 依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev python3 zip unzip \
+                                   binutils-aarch64-linux-gnu build-essential
+
+      - name: 2. 克隆官方源码（内核 + vendor/techpack/DTS）
+        run: |
+          set -e
+          B=oneplus/sm8150_s_12.1_op7pro
+          git clone --depth=1 -b $B https://github.com/OnePlusOSS/android_kernel_oneplus_sm8150.git k
+          git clone --depth=1 -b $B https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8150.git v
+          mkdir -p k/vendor
+          cp -a v/vendor/. k/vendor/
+          echo "--- kernel HEAD ---"; git -C k log --oneline -1
+          echo "--- vendor HEAD ---"; git -C v log --oneline -1
+          echo "--- 关键目录 ---"
+          ls -d k/vendor/qcom k/vendor/oplus k/techpack 2>&1
+          ls k/arch/arm64/configs/vendor/sm8150-perf_defconfig
+          du -sh k
+
+      - name: 3. 工具链（Proton-Clang）
+        run: |
+          set -e
+          git clone --depth=1 https://github.com/kdrag0n/proton-clang.git tc
+          ./tc/bin/clang --version | head -2
+          ls tc/bin | grep -E '^(clang|ld.lld|llvm-ar)$'
+
+      - name: 4. defconfig + 只改两项
+        run: |
+          set -e
+          export PATH=$PWD/tc/bin:$PATH
+          cd k
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+               CROSS_COMPILE=aarch64-linux-gnu- vendor/sm8150-perf_defconfig
+          echo "=== defconfig 后 ==="
+          grep -E 'CONFIG_MODULE_SIG_FORCE|CONFIG_MODVERSIONS|CONFIG_LOCALVERSION=|CONFIG_MODULE_SIG=' out/.config
+          scripts/config --file out/.config -d MODULE_SIG_FORCE -d MODVERSIONS
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+               CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          echo "=== 改完（应看到 SIG_FORCE 与 MODVERSIONS 都不 set）==="
+          grep -E 'CONFIG_MODULE_SIG_FORCE|CONFIG_MODVERSIONS|CONFIG_LOCALVERSION=|CONFIG_MODULE_SIG=' out/.config
+          grep -cE '^CONFIG_' out/.config
+
+      - name: 5. 编 Image
+        run: |
+          set -e
+          export PATH=$PWD/tc/bin:$PATH
+          cd k
+          make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+               CROSS_COMPILE=aarch64-linux-gnu- LD=ld.lld \
+               KCFLAGS="-Wno-error" -j$(nproc) Image 2>&1 | tee ../build.log
+          echo "=== 产物 ==="
+          ls -la out/arch/arm64/boot/Image
+
+      - name: 6. 收集
+        if: always()
+        run: |
+          cp k/out/arch/arm64/boot/Image ./Image 2>/dev/null || echo "NO_IMAGE"
+          cp k/out/.config ./kernel.config 2>/dev/null || true
+          tail -120 build.log > build-tail.log 2>/dev/null || true
+          ls -la . || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oos12-s1
+          path: |
+            Image
+            kernel.config
+            build.log
+            build-tail.log
+          if-no-files-found: warn
