@@ -301,14 +301,13 @@ jobs:
       - name: 4e1. S1e — 叠入设备 OEM vendor（oem.zip → k/vendor）
         run: |
           set -e
-          # 确保 oem.zip 可用：优先仓库内；若 runner 检出缺（曾出现复用旧检出导致 oem.zip 未出现），从 raw 分支 URL 下载
-          if [ ! -f tools/pull/oem.zip ]; then
-            python3 - <<'PYDL'
-import sys, urllib.request
-repo, out = sys.argv[1], sys.argv[2]
-url = "https://raw.githubusercontent.com/%s/oos12/tools/pull/oem.zip" % repo
-urllib.request.urlretrieve(url, out)
-PYDL
+          # 确保 oem.zip 可用：先搜索仓库内任意位置；缺失则从 raw 分支 URL 下载（避免 runner 检出缺 oem.zip）
+          found=0
+          for cand in tools/pull/oem.zip ./oem.zip tools/oem.zip; do
+            if [ -f "$cand" ]; then found=1; break; fi
+          done
+          if [ "$found" = 0 ]; then
+            python3 -c "import urllib.request; urllib.request.urlretrieve('https://raw.githubusercontent.com/amag0723/NonGKI_Kernel_Build_2nd/oos12/tools/pull/oem.zip','tools/pull/oem.zip')"
           fi
           [ -f tools/pull/oem.zip ] || { echo "ABORT: tools/pull/oem.zip 不可用"; exit 1; }
           # oem.zip 含设备 OEM vendor：lib/modules（22 .ko + modules.load 等）+ etc/init/hw/init.target.rc。
