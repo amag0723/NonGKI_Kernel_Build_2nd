@@ -160,11 +160,21 @@ jobs:
           print("=== 缺失路径（去重 %d）===" % len(set(skipped)))
           for s in sorted(set(skipped)):
               print("   " + s)
-          # 硬门禁：绝不允许再出现 260 文件 / 2024 行那种灾难
+          # 硬门禁：OPLUS 私有驱动 Kconfig（touchscreen/soc+oplus/secureguard 等）在官方
+          # 发布里确实缺失，实测约 102 行属正常；但绝不能出现上一版 260 文件/2024 行的
+          # 灾难（那是 base 逻辑错误把 arch/$SRCARCH 等核心入口也注释了）。阈值 400。
+          # 真正的正确性由 step5 的 .config 门禁（>=1000 行 + CONFIG_HZ + CONFIG_MODULES）保证。
           total_lines = sum(n for _, n in fixed_k)
           print("S1FIX_TOTAL_KCONFIG_LINES=%d" % total_lines)
-          if total_lines > 40:
-              raise SystemExit("ABORT: S1FIX 注释了 %d 行 Kconfig source，超过 40 行安全阈值，判定 base 逻辑有误" % total_lines)
+          if total_lines > 400:
+              raise SystemExit("ABORT: S1FIX 注释了 %d 行 Kconfig source，超过 400 行安全阈值，判定 base 逻辑有误" % total_lines)
+          # 附加核心文件保护：这些顶层入口绝不允许被注释（skipped 里存的是 k/ 前缀相对路径）
+          core = {os.path.normpath(os.path.join(KR, c)) for c in
+                  ["arch/$SRCARCH/Kconfig", "init/Kconfig", "drivers/Kconfig", "fs/Kconfig",
+                   "mm/Kconfig", "net/Kconfig", "kernel/Kconfig", "sound/Kconfig", "block/Kconfig"]}
+          for s in skipped:
+              if os.path.normpath(s) in core:
+                  raise SystemExit("ABORT: S1FIX 注释了核心 Kconfig 入口 %s" % s)
           PYEOF
 
       - name: 5. defconfig + 只改两项 + 硬门禁
