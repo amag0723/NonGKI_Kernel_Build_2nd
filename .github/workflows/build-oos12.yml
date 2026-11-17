@@ -401,7 +401,12 @@ jobs:
         run: |
           cp k/out/arch/arm64/boot/Image ./Image 2>/dev/null || echo "NO_IMAGE"
           cp k/out/.config ./kernel.config 2>/dev/null || true
+          cp k/out/System.map ./System.map 2>/dev/null || echo "NO_SYSTEM_MAP"
           tail -120 build.log > build-tail.log 2>/dev/null || true
+          echo "=== S1diag: CRC judge (vendor .ko expects module_layout=3403487431) ==="
+          grep -E '__crc_(module_layout|__stack_chk_fail|__stack_chk_guard|regulator_set_voltage|subsystem_restart_dev|kobject_del|strcmp)$' System.map 2>/dev/null || echo "NO_CRC_SYMS"
+          echo "=== S1diag: total __crc_ syms ==="
+          grep -c '__crc_' System.map 2>/dev/null || true
           echo "=== config 行数 ==="; grep -cE '^CONFIG_' kernel.config 2>/dev/null || true
           echo "=== S1c MODVERSIONS + vermagic 验证 ==="
           grep -E '^CONFIG_MODVERSIONS=' kernel.config || true
@@ -431,6 +436,7 @@ jobs:
           path: |
             Image
             kernel.config
+            System.map
             build.log
             build-tail.log
           if-no-files-found: warn
