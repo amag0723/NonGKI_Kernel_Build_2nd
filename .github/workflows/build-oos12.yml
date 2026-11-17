@@ -304,13 +304,13 @@ jobs:
           # oem.zip 含设备 OEM vendor：lib/modules（22 .ko + modules.load 等）+ etc/init/hw/init.target.rc。
           # 官方 OPLUS k/vendor 无这两处，无冲突；un zip 后 CONFIG_MODULES 按 OEM modules.load 加载 .ko，
           # OEM init.target.rc 的 t≈5.4s 音频 early-init 在 S1 内核上执行。
-          if [ ! -f oem.zip ]; then
-            echo "ABORT: oem.zip 不存在（需先推送 ko/oem.zip）"
+          if [ ! -f tools/pull/oem.zip ]; then
+            echo "ABORT: tools/pull/oem.zip 不存在（需先推送 ko/oem.zip）"
             exit 1
           fi
           mkdir -p k/vendor/lib k/vendor/etc/init/hw
           rm -rf k/vendor/lib/modules k/vendor/etc/init/hw/init.target.rc
-          unzip -q -o oem.zip -d k/vendor
+          unzip -q -o tools/pull/oem.zip -d k/vendor
           echo "vendor/lib/modules .ko 数 = $(ls k/vendor/lib/modules/*.ko 2>/dev/null | wc -l)"
           echo "vendor/lib/modules/modules.load 存在 = $([ -f k/vendor/lib/modules/modules.load ] && echo yes || echo no)"
           echo "vendor/etc/init/hw/init.target.rc 存在 = $([ -f k/vendor/etc/init/hw/init.target.rc ] && echo yes || echo no)"
