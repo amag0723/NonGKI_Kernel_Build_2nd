@@ -337,7 +337,7 @@ jobs:
           grep -qE '^CONFIG_HZ=[0-9]+$' out/.config || { echo "ABORT: CONFIG_HZ 未定义，timeconst 会挂 bc"; exit 1; }
           grep -qE '^CONFIG_MODULES=y$' out/.config || { echo "ABORT: CONFIG_MODULES 未定义"; exit 1; }
 
-      - name: 5b. S1c: 确认真正的 MODVERSIONS=y
+      - name: 5b. S1c — 确认真正的 MODVERSIONS=y
         run: |
           echo "S1c = 官方 OOS12 树 + 原厂 MODVERSIONS=y（CRC 校验），不再骗 vermagic 字符串"
           grep -E '^CONFIG_MODVERSIONS=' k/out/.config || { echo "ABORT: MODVERSIONS 项缺失"; exit 1; }
