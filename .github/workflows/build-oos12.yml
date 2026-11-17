@@ -346,15 +346,19 @@ jobs:
           test "$N" -ge 1000 || { echo "ABORT: .config 只有 $N 行 (<1000)，Kconfig 树仍被破坏"; exit 1; }
           grep -qE '^CONFIG_HZ=[0-9]+$' out/.config || { echo "ABORT: CONFIG_HZ 未定义，timeconst 会挂 bc"; exit 1; }
           grep -qE '^CONFIG_MODULES=y$' out/.config || { echo "ABORT: CONFIG_MODULES 未定义"; exit 1; }
-          # S1e 特定：必须 MODVERSIONS=n（跳过 CRC 校验）
-          grep -q '^CONFIG_MODVERSIONS=n$' out/.config || { echo "ABORT: S1e 需要 CONFIG_MODVERSIONS=n，实际="; grep '^CONFIG_MODVERSIONS=' out/.config; exit 1; }
+          # S1e 特定：必须跳过 CRC（MODVERSIONS=n 或显式关闭均可，均为跳过 CRC，让设备 OEM .ko 能加载）
+          grep -q '^CONFIG_MODVERSIONS=n$' out/.config \
+            || grep -q '^# CONFIG_MODVERSIONS is not set' out/.config \
+            || { echo "ABORT: S1e 需要跳过 CRC（MODVERSIONS=n 或关闭），实际="; grep '^CONFIG_MODVERSIONS' out/.config; exit 1; }
           grep -q '^CONFIG_MODULE_SIG_FORCE=n$' out/.config || { echo "ABORT: CONFIG_MODULE_SIG_FORCE 非 n"; exit 1; }
 
       - name: 5b. S1e — 确认真正的 MODVERSIONS=n（跳过 CRC 校验）
         run: |
           echo "S1e = 官方 OPLUS 树 + 设备 OEM vendor 叠载 + MODVERSIONS=n（跳过 CRC，让 OEM .ko 加载）"
           grep -E '^CONFIG_MODVERSIONS=' k/out/.config || { echo "ABORT: MODVERSIONS 项缺失"; exit 1; }
-          grep -q '^CONFIG_MODVERSIONS=n$' k/out/.config || { echo "ABORT: MODVERSIONS 未设为 n（不是真跳过 CRC）"; exit 1; }
+          grep -q '^CONFIG_MODVERSIONS=n$' k/out/.config \
+            || grep -q '^# CONFIG_MODVERSIONS is not set' k/out/.config \
+            || { echo "ABORT: MODVERSIONS 未设为 n（不是真跳过 CRC）"; exit 1; }
           grep -q '^CONFIG_MODULE_SIG_FORCE=n$' k/out/.config && echo "REAL_MODVERSIONS_N_OK"
 
       - name: 6. 编 Image（timeout + 行缓冲 + 关闭 stdin）
