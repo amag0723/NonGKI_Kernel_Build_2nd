@@ -189,40 +189,31 @@ jobs:
           V = "v/vendor"
           KINC = "k/include/linux"
           copied = []
-          # 内核源码里 #include <linux/<sub>/<file>.h> 的 sub 目录，与 vendor
-          # oplus_performance/<sub>/ 或 kernel/<sub>/ 下的头文件一一对应。
-          # 逐个 vendor 二级子目录，把 .h 放进 k/include/linux/<同名子目录>/。
-          for base in ["oplus/kernel/oplus_performance", "oplus/kernel", "oplus"]:
-              root = os.path.join(V, base)
-              if not os.path.isdir(root):
-                  continue
-              for sub in sorted(os.listdir(root)):
-                  sd = os.path.join(root, sub)
-                  if not os.path.isdir(sd) or sub.startswith("."):
+          # 内核源码 #include <linux/<sub>/<file>.h> 引用的 vendor 头。
+          # 按子目录精准 overlay，且目标若已存在（同名文件/目录）则跳过，绝不报错。
+          # sched_assist 是 mutex.h 明确引用的；其余为 OPLUS 常见头文件子目录。
+          mapping = {
+              "sched_assist": "oplus/kernel/oplus_performance/sched_assist",
+          }
+          for sub, rel in mapping.items():
+              src_dir = os.path.join(V, rel)
+              dst_dir = os.path.join(KINC, sub)
+              if not os.path.isdir(src_dir):
+                  print("MISSING src:", src_dir); continue
+              if os.path.exists(dst_dir) and not os.path.isdir(dst_dir):
+                  # 目标是同名文件，改用备用目录名不加到 include 路径（避免冲突）
+                  print("SKIP collision (dst is file):", dst_dir); continue
+              os.makedirs(dst_dir, exist_ok=True)
+              for h in sorted(os.listdir(src_dir)):
+                  if not h.endswith(".h"):
                       continue
-                  hs = [f for f in os.listdir(sd) if f.endswith(".h")]
-                  if not hs:
-                      continue
-                  # 只有当内核源码确实引用 <linux/<sub>/ 时才 overlay
-                  dst = os.path.join(KINC, sub)
-                  os.makedirs(dst, exist_ok=True)
-                  for h in hs:
-                      src = os.path.join(sd, h)
-                      d = os.path.join(dst, h)
-                      if not os.path.exists(d):
-                          shutil.copy2(src, d); copied.append(os.path.join(sub, h))
-          # sched_assist 是明确被 mutex.h 引用的，强制确保存在
-          sa = os.path.join(V, "oplus/kernel/oplus_performance/sched_assist")
-          if os.path.isdir(sa):
-              dst = os.path.join(KINC, "sched_assist")
-              os.makedirs(dst, exist_ok=True)
-              for h in os.listdir(sa):
-                  if h.endswith(".h"):
-                      shutil.copy2(os.path.join(sa, h), os.path.join(dst, h))
+                  s = os.path.join(src_dir, h); d = os.path.join(dst_dir, h)
+                  if not os.path.exists(d):
+                      shutil.copy2(s, d); copied.append(os.path.join(sub, h))
           print("overlay 头文件 %d 个:" % len(copied))
-          for c in copied[:40]:
+          for c in copied:
               print("   ", c)
-          print("sched_assist 目录存在:", os.path.isdir(os.path.join(KINC, "sched_assist")))
+          print("sched_assist 存在:", os.path.isdir(os.path.join(KINC, "sched_assist")))
           PYOV
 
       - name: 5. defconfig + 只改两项 + 硬门禁
