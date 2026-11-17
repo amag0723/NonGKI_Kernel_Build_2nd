@@ -324,7 +324,7 @@ jobs:
                CROSS_COMPILE=aarch64-linux-gnu- vendor/sm8150-perf_defconfig
           # 必需：关签名强制 / 模块版本校验；camera 驱动与 ADSP/声卡无关且是
           # vendor overlay 类型错误重灾区（clang conflicting-types），整体剔除。
-          scripts/config --file out/.config -d MODULE_SIG_FORCE -d MODVERSIONS -d SPECTRA_CAMERA
+          scripts/config --file out/.config -d MODULE_SIG_FORCE -d SPECTRA_CAMERA -e MODVERSIONS
           make O=out ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
                CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           echo "=== 配置核验 ==="
@@ -337,37 +337,12 @@ jobs:
           grep -qE '^CONFIG_HZ=[0-9]+$' out/.config || { echo "ABORT: CONFIG_HZ 未定义，timeconst 会挂 bc"; exit 1; }
           grep -qE '^CONFIG_MODULES=y$' out/.config || { echo "ABORT: CONFIG_MODULES 未定义"; exit 1; }
 
-      - name: 5b. S1b 关键修复：强制 vermagic 含 modversions
+      - name: 5b. S1c: 确认真正的 MODVERSIONS=y
         run: |
-          python3 - <<'PYEOF'
-          import os
-          p = "k/include/linux/vermagic.h"
-          if not os.path.isfile(p):
-              raise SystemExit("ABORT: %s 不存在" % p)
-          s = open(p).read()
-          print("=== 原始 MODULE_VERMAGIC 定义 ===")
-          for ln in s.splitlines():
-              if "MODULE_VERMAGIC_MODVERSIONS" in ln or "VERMAGIC_STRING" in ln:
-                  print("  ", ln)
-          # 官方 OOS12 原厂树有严格 vermagic 校验。vendor .ko 是 MODVERSIONS=y 编译的，
-          # vermagic 含 "modversions"；我们为规避 __crc_* 链接错误保持 CONFIG_MODVERSIONS=n，
-          # 因此必须强制 VERMAGIC_STRING 也含 "modversions"。
-          # 否则所有 vendor .ko 加载被拒 -> boot_adsp 节点缺失 -> ADSP 不起 -> 无声卡。
-          patch = ("\n/* S1b: force vermagic to match OEM vendor .ko (built with MODVERSIONS=y) */\n"
-                   "#undef MODULE_VERMAGIC_MODVERSIONS\n"
-                   '#define MODULE_VERMAGIC_MODVERSIONS "modversions "\n')
-          idx = s.find("#define VERMAGIC_STRING")
-          if idx < 0:
-              raise SystemExit("ABORT: VERMAGIC_STRING 未找到")
-          s2 = s[:idx] + patch + "\n" + s[idx:]
-          open(p, "w").write(s2)
-          print("=== 补丁后 ===")
-          i = s2.find("#define VERMAGIC_STRING")
-          print(s2[max(0, i - 300):i + 500])
-          if 'MODULE_VERMAGIC_MODVERSIONS "modversions "' not in s2:
-              raise SystemExit("ABORT: vermagic 补丁未生效")
-          print("VERMAGIC_PATCH_OK")
-          PYEOF
+          echo "S1c = 官方 OOS12 树 + 原厂 MODVERSIONS=y（CRC 校验），不再骗 vermagic 字符串"
+          grep -E '^CONFIG_MODVERSIONS=' k/out/.config || { echo "ABORT: MODVERSIONS 项缺失"; exit 1; }
+          grep -q '^CONFIG_MODVERSIONS=y$' k/out/.config || { echo "ABORT: MODVERSIONS 未打开"; exit 1; }
+          grep -q '^CONFIG_MODVERSIONS=y$' k/out/.config && echo "REAL_MODVERSIONS_OK"
 
       - name: 6. 编 Image（timeout + 行缓冲 + 关闭 stdin）
         run: |
@@ -388,11 +363,12 @@ jobs:
           cp k/out/.config ./kernel.config 2>/dev/null || true
           tail -120 build.log > build-tail.log 2>/dev/null || true
           echo "=== config 行数 ==="; grep -cE '^CONFIG_' kernel.config 2>/dev/null || true
-          echo "=== S1b vermagic 验证 ==="
+          echo "=== S1c MODVERSIONS + vermagic 验证 ==="
+          grep -E '^CONFIG_MODVERSIONS=' kernel.config || true
           python3 - <<'PYEOF'
           import os, re
           if not os.path.isfile("Image"):
-              print("NO_IMAGE, skip vermagic check")
+              print("NO_IMAGE, skip")
               raise SystemExit(0)
           d = open("Image", "rb").read()
           found = []
@@ -403,8 +379,8 @@ jobs:
           for s in found:
               print("KERNEL_VERMAGIC:", s)
           if not any("modversions" in s for s in found):
-              raise SystemExit("ABORT: 编译产物 vermagic 仍不含 modversions，S1b 修复失败")
-          print("S1B_VERMAGIC_OK")
+              raise SystemExit("ABORT: Image vermagic 不含 modversions")
+          print("S1C_MODVERSIONS_OK")
           PYEOF
           ls -la . || true
 
