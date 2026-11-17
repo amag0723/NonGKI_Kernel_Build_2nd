@@ -1690,7 +1690,11 @@ jobs:
               ('CONFIG_DEFAULT_HUNG_TASK_TIMEOUT', '30'),
               ('CONFIG_PANIC_ON_OOPS', 'y'),
               ('CONFIG_PANIC_TIMEOUT', '15'),
-              ('CONFIG_QCOM_FORCE_WDOG_BITE_ON_PANIC', 'n'),
+              ('CONFIG_QCOM_FORCE_WDOG_BITE_ON_PANIC', 'y'),
+              ('CONFIG_FUNCTION_TRACER', 'y'),
+              ('CONFIG_FUNCTION_GRAPH_TRACER', 'y'),
+              ('CONFIG_DYNAMIC_FTRACE', 'y'),
+              ('CONFIG_DYNAMIC_FTRACE_WITH_REGS', 'y'),
           ]
           _keys49 = [k for k, _ in _want49]
           _keep49 = []
@@ -1801,38 +1805,6 @@ jobs:
               open(_p51, 'w', encoding='utf-8', newline='\n').write(_src51)
               print('=== fixup: WB-V51 audio populate applied ===')
           PYSELFHEAL
-      # ============================================================
-      # v53: 打开 QUPv2 SPI 主控驱动。
-      #
-      # 2026-11-16 22:2x 在 B 槽（v52）上把整套 OEM audio 模块按 modules.load
-      # 全部装好后，sound-tavil 仍起不来，dmesg 只剩：
-      #     ASoC: CODEC DAI tavil_rx2 not registered
-      # 追下去：tavil(WCD9341) 挂在 QUPv2 SPI（spi@888000）上，
-      #   /sys/bus/spi/devices 只有 spi1.0(fingerprint p61)，
-      #   /sys/class/spi_master 只有 spi0/spi1，
-      #   /sys/bus/spi/drivers/wcd-spi-v2 存在但永远没有 device 可绑。
-      # 根因：v52 的 /proc/config.gz 里
-      #     CONFIG_SPI=y
-      #     # CONFIG_SPI_QUP is not set      <-- 致命
-      #     CONFIG_SPI_QCOM_GENI=y
-      # QUPv2 SPI 主控没有驱动 -> codec 从设备不实例化 -> DAI 不注册
-      #   -> 无声卡 -> audioserver TimeCheck 超时 SIGABRT -> init critical
-      #   计数满 -> 每 ~4 分钟重启一次（用户看到的「一直循环」）。
-      # 这是与 ion/apr 完全独立的第二层缺陷，必须在内核 config 层修。
-      # ============================================================
-      - name: Extra Kernel Options v53 (QUPv2 SPI for WCD9341 codec)
-        shell: bash
-        run: |
-          set -e
-          CFG=arch/arm64/configs/vendor/sm8150-perf_defconfig
-          echo "=== v53 before ==="
-          grep -n 'SPI_QUP' "$CFG" || echo "   (absent)"
-          grep -vE '^CONFIG_SPI_QUP=|^# CONFIG_SPI_QUP is not set$' "$CFG" > "${CFG}.v53tmp"
-          printf 'CONFIG_SPI_QUP=y\n' >> "${CFG}.v53tmp"
-          mv "${CFG}.v53tmp" "$CFG"
-          echo "=== v53 after ==="
-          grep -n 'SPI_QUP' "$CFG"
-          echo "=== fixup: WB-V53 CONFIG_SPI_QUP=y applied ==="
       - name: Patch Kernel of Re:Kernel
         uses: ./.github/workflows/patch-rekernel
 
