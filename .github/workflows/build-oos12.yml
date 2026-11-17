@@ -3,6 +3,12 @@ name: oos12-s1
 # S1 目标：用 OnePlus 官方 OOS12 源码（oneplus/sm8150_s_12.1_op7pro）重建内核，
 # 只改两项必需 config（MODULE_SIG_FORCE / MODVERSIONS），其余照原厂，只编 Image。
 #
+# v12 修复（2026-11-17）：
+#   - v11 编译推进到 drivers/platform/msm/ipa 后又遇 fatal error：OPLUS 头文件
+#     oplus_battery_msm8150Q.h 硬编码 #include "../../../../kernel/msm-4.14/..."，
+#     相对 charger_ic/ 解析为 k/kernel/msm-4.14/（不存在），真实文件在 k/ 内核根。
+#   - step4d 建 k/kernel/msm-4.14 -> .. symlink，统一解析所有该硬编码前缀。
+#
 # v11 修复（2026-11-17）：
 #   - camera 驱动（CONFIG_SPECTRA_CAMERA）与 S1 的 ADSP/声卡验证无关，却是 vendor
 #     overlay 类型错误重灾区（v9 conflicting-types、v10 前向声明插错位置致语法错）。
@@ -281,6 +287,33 @@ jobs:
       - name: 4c. camera 驱动（v11 起由 step5 关 CONFIG_SPECTRA_CAMERA 整体剔除）
         run: |
           echo "camera 驱动与 S1 的 ADSP/声卡验证无关，且是 vendor overlay 类型错误重灾区；已在 step5 关 CONFIG_SPECTRA_CAMERA 整体不编译"
+
+      - name: 4d. OPLUS 硬编码 kernel/msm-4.14 路径兼容 symlink
+        run: |
+          python3 - <<'PYKP'
+          import os
+          # OPLUS 源码里有硬编码 #include "../../../../kernel/msm-4.14/drivers/..."
+          # 相对 k/drivers/power/oplus/charger_ic/ 解析为 k/kernel/msm-4.14/...，
+          # 实际内核根就是 k/。建 k/kernel/msm-4.14 -> ..（指向 k/）统一解析。
+          d = "k/kernel"
+          link = os.path.join(d, "msm-4.14")
+          os.makedirs(d, exist_ok=True)
+          if os.path.lexists(link):
+              if os.path.islink(link):
+                  os.unlink(link)
+              else:
+                  print("WARN: %s 已是实体目录，跳过" % link)
+          if not os.path.lexists(link):
+              os.symlink("..", link)
+              print("created symlink", link, "-> ..")
+          # 自检：从 charger_ic 出发的硬编码路径应能解析到真实 storm-watch.h
+          probe = os.path.normpath(os.path.join(
+              "k/drivers/power/oplus/charger_ic",
+              "../../../../kernel/msm-4.14/drivers/power/supply/qcom/storm-watch.h"))
+          print("probe =", probe, "exists =", os.path.isfile(probe))
+          if not os.path.isfile(probe):
+              raise SystemExit("ABORT: kernel/msm-4.14 symlink 未修正硬编码路径")
+          PYKP
 
       - name: 5. defconfig + 关 camera + 硬门禁
         run: |
