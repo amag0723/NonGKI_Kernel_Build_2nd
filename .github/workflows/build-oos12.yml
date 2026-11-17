@@ -3,6 +3,14 @@ name: oos12-s1
 # S1 目标：用 OnePlus 官方 OOS12 源码（oneplus/sm8150_s_12.1_op7pro）重建内核，
 # 只改两项必需 config（MODULE_SIG_FORCE / MODVERSIONS），其余照原厂，只编 Image。
 #
+# v7 修复（2026-11-17）：
+#   - 官方树 k/include/linux/sched_assist 等是 symlink -> ../../../../vendor/...，
+#     因我们把内核仓放 k/（而非官方的 kernel/oneplus/sm8150/），解析到 workspace 外的
+#     ../vendor/ → broken symlink → 旧 step4b 用 makedirs 覆盖它撞 FileExistsError。
+#   - step2b 把所有 vendor symlink 重定向到已 cp 好的 k/vendor/ 并验证全部可解析，
+#     且必须在 step4 S1FIX 之前（否则 vendor Kconfig 会被误判缺失而注释）。
+#   - 删除旧 step4b 的 makedirs overlay（symlink 已能提供头文件）。
+#
 # v2 修复（2026-11-17）：
 #   - step4 S1FIX 曾以「Kconfig 文件所在目录」为 base 判 source 存在与否，
 #     而 Linux Kconfig 的 source 路径是相对内核根(srctree)的 → 误注释 260 个
@@ -48,6 +56,61 @@ jobs:
           ls k/arch/arm64/configs/vendor/sm8150-perf_defconfig
           echo "Kconfig source 总数: $(grep -rhcE '^\s*(r?source|osource)\s+' k --include=Kconfig | awk '{s+=$1}END{print s}')"
           du -sh k
+
+      - name: 2b. 重定向 vendor symlink 到 k/vendor/（官方树指向 workspace 外）
+        run: |
+          python3 - <<'PYLINK'
+          import os
+          KV = os.path.abspath("k/vendor")
+          relinked, broken = [], []
+
+          def walk_links():
+              for dp, dn, fn in os.walk("k"):
+                  if ".git" in dp.split(os.sep):
+                      continue
+                  for f in list(fn) + list(dn):
+                      p = os.path.join(dp, f)
+                      if os.path.islink(p):
+                          yield p
+
+          for p in walk_links():
+              t = os.readlink(p)
+              if "vendor" not in t or t.startswith("/"):
+                  continue
+              i = t.find("vendor/")
+              if i < 0:
+                  continue
+              sub = t[i+len("vendor/"):]
+              p_abs = os.path.abspath(p)
+              new = os.path.relpath(os.path.join(KV, sub), os.path.dirname(p_abs))
+              try:
+                  os.unlink(p)
+                  os.symlink(new, p)
+                  relinked.append((p, t, new))
+              except Exception as e:
+                  broken.append((p, str(e)))
+
+          print("重定向 vendor symlink %d 个:" % len(relinked))
+          for p, o, n in relinked[:40]:
+              print("   %s : %s -> %s" % (p, o, n))
+          if len(relinked) > 40:
+              print("   ... 其余 %d 个省略" % (len(relinked) - 40))
+          for p, e in broken:
+              print("ERR relink %s : %s" % (p, e))
+
+          still = [(p, os.readlink(p)) for p in walk_links()
+                   if "vendor" in os.readlink(p) and not os.path.exists(p)]
+          print("仍 broken 的 vendor symlink: %d" % len(still))
+          for p, t in still[:20]:
+              print("   BROKEN %s -> %s" % (p, t))
+          if still or broken:
+              raise SystemExit("ABORT: vendor symlink 未全部修复")
+
+          key = "k/include/linux/sched_assist/sched_assist_mutex.h"
+          print("sched_assist_mutex.h 可读:", os.path.isfile(key))
+          if not os.path.isfile(key):
+              raise SystemExit("ABORT: %s 仍不可读" % key)
+          PYLINK
 
       - name: 3. 工具链（Proton-Clang）
         run: |
@@ -182,39 +245,9 @@ jobs:
                   raise SystemExit("ABORT: S1FIX 注释了核心 Kconfig 入口 %s" % s)
           PYEOF
 
-      - name: 4b. vendor OPLUS 头文件 overlay（内核源码引用 <linux/xxx/...>，实际在 vendor 仓）
+      - name: 4b. vendor 头文件（已由 step2b 的 symlink 重定向提供）
         run: |
-          python3 - <<'PYOV'
-          import os, shutil
-          V = "v/vendor"
-          KINC = "k/include/linux"
-          copied = []
-          # 内核源码 #include <linux/<sub>/<file>.h> 引用的 vendor 头。
-          # 按子目录精准 overlay，且目标若已存在（同名文件/目录）则跳过，绝不报错。
-          # sched_assist 是 mutex.h 明确引用的；其余为 OPLUS 常见头文件子目录。
-          mapping = {
-              "sched_assist": "oplus/kernel/oplus_performance/sched_assist",
-          }
-          for sub, rel in mapping.items():
-              src_dir = os.path.join(V, rel)
-              dst_dir = os.path.join(KINC, sub)
-              if not os.path.isdir(src_dir):
-                  print("MISSING src:", src_dir); continue
-              if os.path.exists(dst_dir) and not os.path.isdir(dst_dir):
-                  # 目标是同名文件，改用备用目录名不加到 include 路径（避免冲突）
-                  print("SKIP collision (dst is file):", dst_dir); continue
-              os.makedirs(dst_dir, exist_ok=True)
-              for h in sorted(os.listdir(src_dir)):
-                  if not h.endswith(".h"):
-                      continue
-                  s = os.path.join(src_dir, h); d = os.path.join(dst_dir, h)
-                  if not os.path.exists(d):
-                      shutil.copy2(s, d); copied.append(os.path.join(sub, h))
-          print("overlay 头文件 %d 个:" % len(copied))
-          for c in copied:
-              print("   ", c)
-          print("sched_assist 存在:", os.path.isdir(os.path.join(KINC, "sched_assist")))
-          PYOV
+          echo "vendor headers 由 step2b symlink 重定向到 k/vendor/ 提供，无需再 makedirs 覆盖"
 
       - name: 5. defconfig + 只改两项 + 硬门禁
         run: |
