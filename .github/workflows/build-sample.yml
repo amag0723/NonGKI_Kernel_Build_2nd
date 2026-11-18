@@ -1810,6 +1810,80 @@ jobs:
               _src51 = _src51.rstrip('\n') + '\n' + _blk51
               open(_p51, 'w', encoding='utf-8', newline='\n').write(_src51)
               print('=== fixup: WB-V51 audio populate applied ===')
+          # ==== WB-V56: PIL/ADSP 加载路径 printk 打点（定位挂死死点）====
+          # 只加 pr_err 标记，不改任何逻辑、不引入 tracer（避免 v54 的 mcount 900E）。
+          # 死前每 1s 落 dmesg 的脚本在设备侧跑，最后出现的 WB56-* 即死点。
+          import os as _os56
+          _p56 = _os56.path.join(root, 'drivers/soc/qcom/subsys-pil-tz.c')
+          if not _os56.path.isfile(_p56):
+              raise SystemExit('WB-V56 FATAL: subsys-pil-tz.c not found')
+          _src56 = open(_p56, encoding='utf-8', errors='replace').read()
+          if 'WB56-INIT-PRE' in _src56:
+              print('=== fixup: WB-V56 already applied, skip ===')
+          else:
+              _patches56 = [
+                  # (锚点原文, 标记名) —— 缩进取自官方 raw 源码实测
+                  ('\t\tret = scm_call2(SCM_SIP_FNID(SCM_SVC_PIL, PAS_INIT_IMAGE_CMD),',
+                   'WB56-INIT-PRE'),
+                  ('\t\tret = scm_call2(SCM_SIP_FNID(SCM_SVC_PIL, PAS_MEM_SETUP_CMD),',
+                   'WB56-MEMSETUP-PRE'),
+                  ('\t\trc = scm_call2(SCM_SIP_FNID(SCM_SVC_PIL,\n'
+                   '\t\t\t\tPAS_AUTH_AND_RESET_CMD), &desc);',
+                   'WB56-AUTHRESET-PRE'),
+              ]
+              _applied56 = 0
+              for _a56, _tag56 in _patches56:
+                  _cnt56 = _src56.count(_a56)
+                  if _cnt56 != 1:
+                      raise SystemExit('WB-V56 FATAL: anchor count=%d for %s'
+                                       % (_cnt56, _tag56))
+                  _ind56 = _a56[:len(_a56) - len(_a56.lstrip('\t'))]
+                  _src56 = _src56.replace(
+                      _a56,
+                      _ind56 + 'pr_err("%s\\n");\n' % _tag56 + _a56, 1)
+                  _applied56 += 1
+              # 每个 SCM 调用返回后补 POST 标记，形成 前/后 配对
+              # INIT 之后（1 tab）
+              _initpost = ('\tdma_free_attrs(&dev, size, mdata_buf, mdata_phys, attrs);\n'
+                           '\tscm_pas_disable_bw();\n\tif (ret)\n\t\treturn ret;\n'
+                           '\treturn scm_ret;\n}\n\nstatic int pil_mem_setup_trusted')
+              if _src56.count(_initpost) != 1:
+                  raise SystemExit('WB-V56 FATAL: initpost anchor count=%d'
+                                   % _src56.count(_initpost))
+              _src56 = _src56.replace(
+                  _initpost,
+                  '\tdma_free_attrs(&dev, size, mdata_buf, mdata_phys, attrs);\n'
+                  '\tscm_pas_disable_bw();\n'
+                  '\tpr_err("WB56-INIT-POST ret=%d\\n", ret);\n'
+                  '\tif (ret)\n\t\treturn ret;\n\treturn scm_ret;\n}\n\n'
+                  'static int pil_mem_setup_trusted', 1)
+              # MEMSETUP 之后（1 tab 的 scm_ret 行 + if ret）
+              _mempost = ('\tscm_ret = desc.ret[0];\n\n\tif (ret)\n\t\treturn ret;\n'
+                          '\treturn scm_ret;\n}\n\nstatic int pil_auth_and_reset')
+              if _src56.count(_mempost) != 1:
+                  raise SystemExit('WB-V56 FATAL: mempost anchor count=%d'
+                                   % _src56.count(_mempost))
+              _src56 = _src56.replace(
+                  _mempost,
+                  '\tscm_ret = desc.ret[0];\n'
+                  '\tpr_err("WB56-MEMSETUP-POST ret=%d\\n", ret);\n'
+                  '\n\tif (ret)\n\t\treturn ret;\n\treturn scm_ret;\n}\n\n'
+                  'static int pil_auth_and_reset', 1)
+              # AUTHRESET 之后（错误路径前）
+              _authpost = ('\tscm_pas_disable_bw();\n\tif (rc)\n\t\tgoto err_reset;')
+              if _src56.count(_authpost) != 1:
+                  raise SystemExit('WB-V56 FATAL: authpost anchor count=%d'
+                                   % _src56.count(_authpost))
+              _src56 = _src56.replace(
+                  _authpost,
+                  '\tscm_pas_disable_bw();\n'
+                  '\tpr_err("WB56-AUTHRESET-POST rc=%d\\n", rc);\n'
+                  '\tif (rc)\n\t\tgoto err_reset;', 1)
+              # PIL 核心五步（load_seg/proxy vote 等）在 peripheral-loader.c，这里靠
+              # init/mem/auth 三对标记已足以把死点界定到某一 SCM 调用前后。
+              open(_p56, 'w', encoding='utf-8', newline='\n').write(_src56)
+              print('=== fixup: WB-V56 PIL/ADSP printk probes applied (%d pre+post pairs) ==='
+                    % _applied56)
           PYSELFHEAL
       # ============================================================
       # v53: 打开 QUPv2 SPI 主控驱动。
