@@ -1676,21 +1676,31 @@ jobs:
           print("=== diagnostics: Makefile obj- dirs absent: %d ===" % len(missing_obj))
           for p, d in missing_obj[:80]:
               print("    ", p, "->", d)
-          # ==== WB-V49: v41 流水线 + 11 项诊断配置（让 hang 变 panic）====
+          # ==== WB-V55: 撤销 V49 的「让 hang 变 panic」自杀配置 ====
+          # 对照实验：同一套 B 系统，A 内核(stock+Kitsune)稳定到 159s、MODS=25、
+          # boot_adsp=boot ssr；v53 内核在 34~40s 必掉线，pstore 空、
+          # bootreason=reboot（普通 reboot，不是 panic dump）。
+          # 根因锁定 v53 继承的 V49 诊断配置：启动期瞬态 softlockup / hung task
+          # 被判 panic，PANIC_TIMEOUT=15 后直接 reboot，把内核「自己杀掉」。
+          # v55 恢复 A 内核 / v41 基线的「检测但不自杀」值：
+          #   softlockup off、hung panic off、panic_on_oops off、panic_timeout=-1、
+          #   FORCE_WDOG_BITE=y、hung timeout=60。栈保护与 SPI_QUP 保持不变。
           import os as _os49
           _cfg49 = _os49.path.join(root, 'arch/arm64/configs/vendor/sm8150-perf_defconfig')
           _want49 = [
               ('CONFIG_CC_STACKPROTECTOR', 'y'),
               ('CONFIG_CC_STACKPROTECTOR_STRONG', 'y'),
               ('CONFIG_CC_STACKPROTECTOR_NONE', 'n'),
-              ('CONFIG_SOFTLOCKUP_DETECTOR', 'y'),
-              ('CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC', 'y'),
+              # ↓ v55: 以下 8 项恢复为 v41/A 内核存活值（不再自杀）
+              ('CONFIG_SOFTLOCKUP_DETECTOR', 'n'),
+              ('CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC', 'n'),
               ('CONFIG_DETECT_HUNG_TASK', 'y'),
-              ('CONFIG_BOOTPARAM_HUNG_TASK_PANIC', 'y'),
-              ('CONFIG_DEFAULT_HUNG_TASK_TIMEOUT', '30'),
-              ('CONFIG_PANIC_ON_OOPS', 'y'),
-              ('CONFIG_PANIC_TIMEOUT', '15'),
-              ('CONFIG_QCOM_FORCE_WDOG_BITE_ON_PANIC', 'n'),
+              ('CONFIG_BOOTPARAM_HUNG_TASK_PANIC', 'n'),
+              ('CONFIG_BOOTPARAM_HUNG_TASK_PANIC_VALUE', '0'),
+              ('CONFIG_DEFAULT_HUNG_TASK_TIMEOUT', '60'),
+              ('CONFIG_PANIC_ON_OOPS', 'n'),
+              ('CONFIG_PANIC_TIMEOUT', '-1'),
+              ('CONFIG_QCOM_FORCE_WDOG_BITE_ON_PANIC', 'y'),
           ]
           _keys49 = [k for k, _ in _want49]
           _keep49 = []
@@ -1709,7 +1719,7 @@ jobs:
               _keep49.append('# %s is not set' % _k if _v == 'n' else '%s=%s' % (_k, _v))
           open(_cfg49, 'w', encoding='utf-8', newline='\n').write(
               '\n'.join(_keep49) + '\n')
-          print('=== fixup: WB-V49 diag applied (%d options) ===' % len(_want49))
+          print('=== fixup: WB-V55 no-suicide diag applied (%d options) ===' % len(_want49))
           # ==== WB-V50: MODGATE —— 5.9s 那波 *_dlkm 延后到 12s 之后 ====
           import os as _os50
           _p50 = _os50.path.join(root, 'kernel/module.c')
@@ -1820,7 +1830,7 @@ jobs:
       #   计数满 -> 每 ~4 分钟重启一次（用户看到的「一直循环」）。
       # 这是与 ion/apr 完全独立的第二层缺陷，必须在内核 config 层修。
       # ============================================================
-      - name: Extra Kernel Options v53 (QUPv2 SPI for WCD9341 codec)
+      - name: Extra Kernel Options v55 (QUPv2 SPI for WCD9341 codec)
         shell: bash
         run: |
           set -e
@@ -1833,7 +1843,7 @@ jobs:
           mv "${CFG}.v53tmp" "$CFG"
           echo "=== v53 after ==="
           grep -n 'SPI_QUP' "$CFG"
-          echo "=== fixup: WB-V53 CONFIG_SPI_QUP=y applied ==="
+          echo "=== fixup: WB-V55 CONFIG_SPI_QUP=y applied ==="
       - name: Patch Kernel of Re:Kernel
         uses: ./.github/workflows/patch-rekernel
 
